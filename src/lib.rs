@@ -20,7 +20,7 @@ pub mod tools;
 
 pub mod agent;
 pub mod analysis;
-pub mod memory;
 pub mod config;
 pub mod history;
+pub mod memory;
 pub mod telemetry;

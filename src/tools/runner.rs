@@ -9,7 +9,7 @@
 //!
 //! 设计原则：运行结果判断是确定性逻辑，由 Rust 完成，不依赖 LLM。
 
-use crate::error::Result;
+use crate::error::{PadaError, Result};
 use crate::models::TestResult;
 use std::path::{Path, PathBuf};
 
@@ -129,7 +129,37 @@ impl Runner {
         //       - drop(child.stdin.take()) 之前写入 input
         //       - 再 child.wait_with_output()
         //       若遇管道缓冲区问题，可使用 tempfile 或后续引入 tokio::process。
-        todo!("实现程序运行")
+
+        //1、检查文件是否存在
+        if !program.is_file() {
+            return Err(PadaError::FileNotFound(program.display().to_string()));
+        }
+
+        use std::process::{Command, Stdio};
+        //2、构建命令
+        let mut cmd = Command::new(program);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(dir) = &self.workdir {
+            cmd.current_dir(dir);
+        } //如果有工作目录就设置
+
+        use std::io::Write;
+        //3、开启spawn子进程
+        let mut child = cmd.spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input.as_bytes())?; //将输入写入子进程
+        }
+        let output = child.wait_with_output()?; //从子进程捕获输出
+
+        //4、组装RunOutput
+        Ok(RunOutput {
+            success: output.status.success(),
+            exit_code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
     }
 }
 
@@ -171,11 +201,7 @@ impl TestRunner {
     ///
     /// 若程序运行失败（非零退出），该用例 passed = false，
     /// actual_output 可填 stderr 或空字符串。
-    pub fn run_tests(
-        &self,
-        program: &Path,
-        tests: &[TestCase],
-    ) -> Result<Vec<TestResult>> {
+    pub fn run_tests(&self, program: &Path, tests: &[TestCase]) -> Result<Vec<TestResult>> {
         // TODO: 实现批量测试运行
         //
         // 建议步骤：
@@ -194,6 +220,34 @@ impl TestRunner {
         //
         // 提示：Runner::run 出错时该用例应标记为未通过，
         //       但若代表程序本身不存在等致命错误，可直接向上传递 Err。
-        todo!("实现批量测试运行")
+
+        let mut vec: Vec<TestResult> = Vec::new();
+        for test in tests.iter() {
+            let run = match self.runner.run(program, &test.input) {
+                Ok(result) => result,
+                Err(e) => match e {
+                    PadaError::FileNotFound(message) => {
+                        return Err(PadaError::FileNotFound(message));
+                    }
+                    _ => {
+                        vec.push(TestResult {
+                            name: test.name.clone(),
+                            passed: false,
+                            actual_output: "".to_string(),
+                            expected_output: test.expected_output.clone(),
+                        });
+                        continue;
+                    }
+                },
+            };
+            let passed = run.success && run.stdout.trim() == test.expected_output.trim();
+            vec.push(TestResult {
+                name: test.name.clone(),
+                passed,
+                actual_output: run.stdout,
+                expected_output: test.expected_output.clone(),
+            });
+        }
+        Ok(vec)
     }
 }

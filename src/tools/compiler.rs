@@ -93,11 +93,7 @@ impl CompilerTool {
     /// 编译的原始输出。调用方根据 `success` 判断是否继续。
     /// 注意：学生代码的编译错误不会作为 Err 返回，
     /// 而是体现在 `CompileOutput.success == false` 与 stderr 中。
-    pub fn compile_file(
-        &self,
-        source: &Path,
-        output: Option<&Path>,
-    ) -> Result<CompileOutput> {
+    pub fn compile_file(&self, source: &Path, output: Option<&Path>) -> Result<CompileOutput> {
         // TODO: 实现 rustc 编译调用
         //
         // 建议步骤：
@@ -128,7 +124,7 @@ impl CompilerTool {
         let mut cmd = Command::new(&self.rustc_path);
         cmd.arg("--edition").arg(&self.edition).arg(source);
         if let Some(output) = output {
-            cmd.arg("-o").arg("output");
+            cmd.arg("-o").arg(output);
         }
 
         //3、运行命令并提取输出
@@ -140,7 +136,12 @@ impl CompilerTool {
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
-        let compile_output = CompileOutput {success, stdout, stderr, exit_code};
+        let compile_output = CompileOutput {
+            success,
+            stdout,
+            stderr,
+            exit_code,
+        };
         Ok(compile_output)
     }
 
@@ -159,11 +160,15 @@ impl CompilerTool {
         // 2. 构造 Command：cargo check
         //      .current_dir(project_dir)
         // 3. 捕获输出并组装 CompileOutput
-        
+
         //1、检查目录和文件是否存在
-        if !project_dir.is_dir() {return Err(PadaError::FileNotFound(project_dir.display().to_string()));}
+        if !project_dir.is_dir() {
+            return Err(PadaError::FileNotFound(project_dir.display().to_string()));
+        }
         let file = project_dir.join("Cargo.toml");
-        if !file.is_file() {return Err(PadaError::FileNotFound(file.display().to_string()));}
+        if !file.is_file() {
+            return Err(PadaError::FileNotFound(file.display().to_string()));
+        }
 
         use std::process::Command;
         //2、构造命令
