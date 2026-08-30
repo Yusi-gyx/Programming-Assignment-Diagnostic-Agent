@@ -7,7 +7,7 @@
 //! ```
 
 use PADA::analysis::error_parser::{RustcDiagnostic, Severity, SourceLocation};
-use PADA::analysis::hint::{generate_compile_hint, generate_test_hint, Hint};
+use PADA::analysis::hint::{generate_compile_hint, generate_test_hint};
 use PADA::models::{
     Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult,
 };

@@ -7,7 +7,7 @@
 //! 同时覆盖编译通过 → 运行测试 → 测试失败 → 逻辑错误分类 的路径。
 
 use PADA::agent::progress::{CancelToken, DiagnosticStage, SilentProgress, ProgressReporter};
-use PADA::agent::llm::{ChatMessage, LlmResponse};
+use PADA::agent::llm::LlmResponse;
 use PADA::analysis::classifier::{
     classify_compile_diagnostics, classify_test_failure,
 };

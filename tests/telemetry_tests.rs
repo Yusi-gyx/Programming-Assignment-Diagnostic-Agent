@@ -9,7 +9,7 @@
 use PADA::agent::llm::LlmResponse;
 use PADA::config::model::ModelConfig;
 use PADA::telemetry::{
-    calculate_cost, HistoryTotal, UsageRecord, UsageTracker,
+    calculate_cost, UsageRecord, UsageTracker,
 };
 
 /// 构造一个模型配置（价格便于心算：输入 1 元/百万，输出 2 元/百万）
