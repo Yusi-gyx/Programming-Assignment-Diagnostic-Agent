@@ -10,7 +10,7 @@ use PADA::analysis::classifier::{
     classify_compile_diagnostic, classify_compile_diagnostics, classify_test_failure,
     code_to_knowledge_point,
 };
-use PADA::analysis::error_parser::{parse_diagnostics, RustcDiagnostic, Severity};
+use PADA::analysis::error_parser::{RustcDiagnostic, Severity, parse_diagnostics};
 use PADA::models::{ErrorCategory, KnowledgePoint};
 use PADA::tools::compiler::CompilerTool;
 use std::path::PathBuf;
@@ -39,24 +39,42 @@ fn make_diag(code: Option<&str>, severity: Severity) -> RustcDiagnostic {
 
 #[test]
 fn test_code_to_knowledge_ownership() {
-    assert_eq!(code_to_knowledge_point("E0382"), Some(KnowledgePoint::Ownership));
+    assert_eq!(
+        code_to_knowledge_point("E0382"),
+        Some(KnowledgePoint::Ownership)
+    );
 }
 
 #[test]
 fn test_code_to_knowledge_borrowing() {
-    assert_eq!(code_to_knowledge_point("E0499"), Some(KnowledgePoint::Borrowing));
-    assert_eq!(code_to_knowledge_point("E0502"), Some(KnowledgePoint::Borrowing));
+    assert_eq!(
+        code_to_knowledge_point("E0499"),
+        Some(KnowledgePoint::Borrowing)
+    );
+    assert_eq!(
+        code_to_knowledge_point("E0502"),
+        Some(KnowledgePoint::Borrowing)
+    );
 }
 
 #[test]
 fn test_code_to_knowledge_lifetime() {
-    assert_eq!(code_to_knowledge_point("E0106"), Some(KnowledgePoint::Lifetime));
-    assert_eq!(code_to_knowledge_point("E0597"), Some(KnowledgePoint::Lifetime));
+    assert_eq!(
+        code_to_knowledge_point("E0106"),
+        Some(KnowledgePoint::Lifetime)
+    );
+    assert_eq!(
+        code_to_knowledge_point("E0597"),
+        Some(KnowledgePoint::Lifetime)
+    );
 }
 
 #[test]
 fn test_code_to_knowledge_trait() {
-    assert_eq!(code_to_knowledge_point("E0277"), Some(KnowledgePoint::Trait));
+    assert_eq!(
+        code_to_knowledge_point("E0277"),
+        Some(KnowledgePoint::Trait)
+    );
 }
 
 #[test]
@@ -176,10 +194,7 @@ fn test_classify_real_e0382() {
         .iter()
         .find(|d| d.knowledge_points.contains(&KnowledgePoint::Ownership));
     assert!(ownership.is_some(), "E0382 应映射到 Ownership");
-    assert_eq!(
-        ownership.unwrap().category,
-        ErrorCategory::CompileError
-    );
+    assert_eq!(ownership.unwrap().category, ErrorCategory::CompileError);
 }
 
 #[test]

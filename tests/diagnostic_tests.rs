@@ -7,7 +7,7 @@
 //! ```
 
 use PADA::analysis::error_parser::{
-    parse_diagnostics, parse_header, parse_location, parse_note, Severity,
+    Severity, parse_diagnostics, parse_header, parse_location, parse_note,
 };
 use PADA::tools::compiler::CompilerTool;
 use std::path::PathBuf;
@@ -25,8 +25,8 @@ fn fixture(relative: &str) -> PathBuf {
 
 #[test]
 fn test_parse_header_error_with_code() {
-    let (sev, code, msg) = parse_header("error[E0382]: borrow of moved value: `s`")
-        .expect("应识别为头部行");
+    let (sev, code, msg) =
+        parse_header("error[E0382]: borrow of moved value: `s`").expect("应识别为头部行");
     assert_eq!(sev, Severity::Error);
     assert_eq!(code.as_deref(), Some("E0382"));
     assert_eq!(msg, "borrow of moved value: `s`");
@@ -34,8 +34,7 @@ fn test_parse_header_error_with_code() {
 
 #[test]
 fn test_parse_header_warning_no_code() {
-    let (sev, code, msg) = parse_header("warning: unused variable: `t`")
-        .expect("应识别为头部行");
+    let (sev, code, msg) = parse_header("warning: unused variable: `t`").expect("应识别为头部行");
     assert_eq!(sev, Severity::Warning);
     assert!(code.is_none());
     assert_eq!(msg, "unused variable: `t`");
@@ -93,8 +92,7 @@ fn test_parse_location_non_location() {
 
 #[test]
 fn test_parse_note_note() {
-    let note = parse_note("  = note: `String` does not implement `Copy`")
-        .expect("应识别为附注");
+    let note = parse_note("  = note: `String` does not implement `Copy`").expect("应识别为附注");
     assert_eq!(note, "`String` does not implement `Copy`");
 }
 
@@ -199,10 +197,7 @@ fn test_parse_diagnostics_empty() {
 fn test_parse_diagnostics_notes_collected() {
     let diags = parse_diagnostics(SAMPLE_E0382);
     // 第一条诊断应收集到附注（note / help）
-    assert!(
-        !diags[0].notes.is_empty(),
-        "E0382 诊断应包含附注信息"
-    );
+    assert!(!diags[0].notes.is_empty(), "E0382 诊断应包含附注信息");
     // 验证附注内容包含关键词
     let all_notes = diags[0].notes.join(" ");
     assert!(
@@ -235,7 +230,10 @@ fn test_parse_diagnostics_single_error_no_warning() {
     assert_eq!(diags.len(), 1, "应为 1 条诊断");
     assert_eq!(diags[0].severity, Severity::Error);
     assert_eq!(diags[0].code.as_deref(), Some("E0499"));
-    assert_eq!(diags[0].message, "cannot borrow `s` as mutable more than once at a time");
+    assert_eq!(
+        diags[0].message,
+        "cannot borrow `s` as mutable more than once at a time"
+    );
     let loc = diags[0].location.as_ref().expect("应有位置");
     assert_eq!(loc.line, 6);
     assert_eq!(loc.column, 14);

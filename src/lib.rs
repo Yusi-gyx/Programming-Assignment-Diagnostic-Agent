@@ -16,6 +16,7 @@
 
 pub mod error;
 pub mod models;
+pub mod report;
 pub mod tools;
 
 pub mod agent;

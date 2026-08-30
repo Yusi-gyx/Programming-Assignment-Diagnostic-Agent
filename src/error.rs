@@ -29,6 +29,14 @@ pub enum PadaError {
     /// 解析错误（如解析 rustc 输出失败）
     #[error("解析错误: {0}")]
     Parse(String),
+
+    /// 配置错误（如 profile 不存在、配置文件格式错误）
+    #[error("配置错误: {0}")]
+    Config(String),
+
+    /// LLM 调用错误（如网络失败、响应格式异常）
+    #[error("LLM 调用失败: {0}")]
+    Llm(String),
 }
 
 /// 统一 Result 别名

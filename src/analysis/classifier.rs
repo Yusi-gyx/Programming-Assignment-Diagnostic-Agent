@@ -66,7 +66,22 @@ pub fn code_to_knowledge_point(code: &str) -> Option<KnowledgePoint> {
     //       ...
     //       _ => None,
     //   }
-    todo!("实现错误码到知识点的映射表")
+    match code {
+        "E0382" => Some(KnowledgePoint::Ownership),
+        "E0507" => Some(KnowledgePoint::Ownership),
+        "E0505" => Some(KnowledgePoint::Borrowing),
+        "E0499" => Some(KnowledgePoint::Borrowing),
+        "E0502" => Some(KnowledgePoint::Borrowing),
+        "E0500" => Some(KnowledgePoint::Borrowing),
+        "E0106" => Some(KnowledgePoint::Lifetime),
+        "E0597" => Some(KnowledgePoint::Lifetime),
+        "E0277" => Some(KnowledgePoint::Trait),
+        "E0404" => Some(KnowledgePoint::Trait),
+        "E0243" => Some(KnowledgePoint::Generic),
+        "E0283" => Some(KnowledgePoint::Result),
+        "E0554" => Some(KnowledgePoint::PatternMatching),
+        _ => None,
+    }
 }
 
 // ============================================================
@@ -94,7 +109,27 @@ pub fn classify_compile_diagnostic(diag: &RustcDiagnostic) -> Diagnostic {
     //    否则（无错误码）：
     //      knowledge_points = vec![], confidence = 0.3
     // 3. 返回 Diagnostic { category, knowledge_points, confidence }
-    todo!("实现编译诊断分类")
+    let category = ErrorCategory::CompileError;
+    let mut knowledge_points: Vec<KnowledgePoint> = Vec::new();
+    let mut confidence: f32 = 0.95;
+    match diag.code.as_ref() {
+        Some(code) => match code_to_knowledge_point(&code) {
+            Some(knowledge_point) => {
+                knowledge_points.push(knowledge_point);
+            }
+            None => {
+                confidence = 0.5;
+            }
+        },
+        None => {
+            confidence = 0.3;
+        }
+    }
+    Diagnostic {
+        category,
+        knowledge_points,
+        confidence,
+    }
 }
 
 /// 对多条编译诊断批量分类。
@@ -112,7 +147,14 @@ pub fn classify_compile_diagnostics(diags: &[RustcDiagnostic]) -> Vec<Diagnostic
     //
     // 提示：也可选择保留 warning，由调用方决定。
     //       V1 默认只分类 error，warning 暂不产生 Diagnostic。
-    todo!("实现批量编译诊断分类")
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    for diag in diags.iter() {
+        if diag.severity == crate::analysis::error_parser::Severity::Warning {
+            continue;
+        }
+        diagnostics.push(classify_compile_diagnostic(diag));
+    }
+    diagnostics
 }
 
 /// 根据测试失败结果分类，生成 [`Diagnostic`]。
@@ -132,5 +174,12 @@ pub fn classify_test_failure(name: &str, actual: &str, expected: &str) -> Diagno
     // 4. （可选）把 name/actual/expected 记入 Diagnostic 的扩展字段
     //    当前 Diagnostic 结构无此字段，故仅返回分类信息
     let _ = (name, actual, expected);
-    todo!("实现测试失败分类")
+    let category = ErrorCategory::LogicError;
+    let knowledge_points = vec![];
+    let confidence: f32 = 0.3;
+    Diagnostic {
+        category,
+        knowledge_points,
+        confidence,
+    }
 }

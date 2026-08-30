@@ -123,24 +123,26 @@ pub fn parse_header(line: &str) -> Option<(Severity, Option<String>, String)> {
     //   } else { return None; };
     //   再从 rest 解析 "[Exxxx]" 与 ": message"。
     let line = line.trim_start().to_string();
-    let (severity, rest) = 
-        if let Some(rest) = line.strip_prefix("error") {
-            (Severity::Error, rest)
-        } else if let Some(rest) = line.strip_prefix("warning") {
-            (Severity::Warning, rest)
-        } else {return None;};
+    let (severity, rest) = if let Some(rest) = line.strip_prefix("error") {
+        (Severity::Error, rest)
+    } else if let Some(rest) = line.strip_prefix("warning") {
+        (Severity::Warning, rest)
+    } else {
+        return None;
+    };
     let mut rest = rest;
     let mut code = None;
     if rest.starts_with('[') {
         let end = rest.find(']')?;
-        let inside = &rest [1..end];
-        let valid_code =
-            inside.starts_with('E')
+        let inside = &rest[1..end];
+        let valid_code = inside.starts_with('E')
             && inside.len() > 1
             && inside[1..].chars().all(|c| c.is_ascii_digit());
-        if !valid_code {return None;}
+        if !valid_code {
+            return None;
+        }
         code = Some(inside.to_string());
-        rest = &rest [end + 1 ..];     //去除前面已经处理的内容
+        rest = &rest[end + 1..]; //去除前面已经处理的内容
     }
     let message = rest.strip_prefix(": ")?.to_string();
     Some((severity, code, message))
@@ -165,15 +167,16 @@ pub fn parse_location(line: &str) -> Option<SourceLocation> {
     // 例： "--> src/main.rs:6:20"
     //   → file="src/main.rs", line=6, column=20
     let line = line.trim_start().to_string();
-    let mut rest = 
-        if let Some(rest) = line.strip_prefix("-->") {
-            rest.trim()
-        } else {return None;};
+    let rest = if let Some(rest) = line.strip_prefix("-->") {
+        rest.trim()
+    } else {
+        return None;
+    };
     let last_colon = rest.rfind(':')?;
-    let column_str = &rest [last_colon + 1..];
+    let column_str = &rest[last_colon + 1..];
     let before_colon = &rest[..last_colon].to_string();
     let second_colon = before_colon.rfind(':')?;
-    let line_str = &before_colon [second_colon + 1..];
+    let line_str = &before_colon[second_colon + 1..];
     let file = &before_colon[..second_colon].to_string();
     let column = column_str.parse::<usize>().ok()?;
     let line = line_str.parse::<usize>().ok()?;
@@ -201,14 +204,15 @@ pub fn parse_note(line: &str) -> Option<String> {
     // 提示：注意先处理带 "= " 的形式，再处理 "help:"，
     //       避免前缀匹配顺序错误。
     let line = line.trim();
-    let message = 
-        if let Some(message) = line.strip_prefix("= note:") {
-            message
-        } else if let Some(message) = line.strip_prefix("= help:") {
-            message
-        } else if let Some(message) = line.strip_prefix("help:") {
-            message
-        } else {return None;};
+    let message = if let Some(message) = line.strip_prefix("= note:") {
+        message
+    } else if let Some(message) = line.strip_prefix("= help:") {
+        message
+    } else if let Some(message) = line.strip_prefix("help:") {
+        message
+    } else {
+        return None;
+    };
     Some(message.trim().to_string())
 }
 
@@ -266,7 +270,7 @@ pub fn parse_diagnostics(stderr: &str) -> Vec<RustcDiagnostic> {
                     notes: vec![],
                 });
                 continue;
-            },
+            }
             None => (),
         }
         match parse_location(&line) {
@@ -275,7 +279,7 @@ pub fn parse_diagnostics(stderr: &str) -> Vec<RustcDiagnostic> {
                     diag.location = Some(location);
                 }
                 continue;
-            },
+            }
             None => (),
         }
         match parse_note(&line) {
@@ -283,7 +287,7 @@ pub fn parse_diagnostics(stderr: &str) -> Vec<RustcDiagnostic> {
                 if let Some(diag) = pending.as_mut() {
                     diag.notes.push(note);
                 }
-            },
+            }
             None => (),
         }
     }

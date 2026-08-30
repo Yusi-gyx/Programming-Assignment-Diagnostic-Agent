@@ -6,6 +6,8 @@
 //!
 //! - [`compiler`]: 编译工具（rustc / cargo check）
 //! - [`runner`]:   程序运行与测试运行器
+//! - [`test_gen`]: 自动测试用例生成
 
 pub mod compiler;
 pub mod runner;
+pub mod test_gen;
