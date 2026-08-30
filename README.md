@@ -30,7 +30,7 @@ cd PADA
 cargo build --release
 ```
 
-编译产物位于 `target/release/PADA`。
+编译产物位于 `target/release/pada`。
 
 ## 快速开始
 

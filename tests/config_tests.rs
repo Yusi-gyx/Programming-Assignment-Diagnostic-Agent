@@ -6,7 +6,7 @@
 //! cargo test --test config_tests
 //! ```
 
-use PADA::config::model::{Config, ModelConfig};
+use pada::config::model::{Config, ModelConfig};
 use std::collections::HashMap;
 
 // ============================================================

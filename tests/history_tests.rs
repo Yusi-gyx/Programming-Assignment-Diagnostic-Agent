@@ -6,12 +6,12 @@
 //! cargo test --test history_tests
 //! ```
 
-use PADA::agent::llm::{ChatMessage, LlmResponse};
-use PADA::config::model::ModelConfig;
-use PADA::history::{
+use pada::agent::llm::{ChatMessage, LlmResponse};
+use pada::config::model::ModelConfig;
+use pada::history::{
     AgentDecision, LlmExchange, Session, StepBuilder, ToolCall,
 };
-use PADA::telemetry::UsageRecord;
+use pada::telemetry::UsageRecord;
 
 // ============================================================
 // 辅助构造函数

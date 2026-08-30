@@ -6,9 +6,9 @@
 //! cargo test --test telemetry_tests
 //! ```
 
-use PADA::agent::llm::LlmResponse;
-use PADA::config::model::ModelConfig;
-use PADA::telemetry::{
+use pada::agent::llm::LlmResponse;
+use pada::config::model::ModelConfig;
+use pada::telemetry::{
     calculate_cost, UsageRecord, UsageTracker,
 };
 

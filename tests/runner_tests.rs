@@ -7,8 +7,8 @@
 //! cargo test --test runner_tests
 //! ```
 
-use PADA::tools::compiler::CompilerTool;
-use PADA::tools::runner::{Runner, TestCase, TestRunner};
+use pada::tools::compiler::CompilerTool;
+use pada::tools::runner::{Runner, TestCase, TestRunner};
 use std::path::PathBuf;
 
 fn fixture(relative: &str) -> PathBuf {

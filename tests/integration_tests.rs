@@ -8,9 +8,9 @@
 //! cargo test --test integration_tests
 //! ```
 
-use PADA::models::{Assignment, Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, Submission};
-use PADA::tools::compiler::CompilerTool;
-use PADA::tools::runner::{TestCase, TestRunner};
+use pada::models::{Assignment, Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, Submission};
+use pada::tools::compiler::CompilerTool;
+use pada::tools::runner::{TestCase, TestRunner};
 use std::path::PathBuf;
 
 fn fixture(relative: &str) -> PathBuf {

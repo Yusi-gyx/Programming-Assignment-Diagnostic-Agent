@@ -7,8 +7,8 @@
 //! cargo test --test test_gen_tests
 //! ```
 
-use PADA::models::Assignment;
-use PADA::tools::test_gen::{
+use pada::models::Assignment;
+use pada::tools::test_gen::{
     boundary_case_types, build_prompt, parse_test_cases,
 };
 

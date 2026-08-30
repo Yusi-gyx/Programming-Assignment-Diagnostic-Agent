@@ -26,9 +26,9 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use PADA::analysis::hint::generate_compile_hint;
-use PADA::history::Session;
-use PADA::report::{CompileReportEntry, DiagnosticReport};
+use pada::analysis::hint::generate_compile_hint;
+use pada::history::Session;
+use pada::report::{CompileReportEntry, DiagnosticReport};
 
 // ============================================================
 // CLI 定义
@@ -129,18 +129,18 @@ fn run_diagnose(
     history_path: Option<PathBuf>,
     save_path: Option<PathBuf>,
     config_path: Option<PathBuf>,
-) -> PADA::error::Result<()> {
-    use PADA::analysis::classifier::classify_compile_diagnostics;
-    use PADA::analysis::error_parser::parse_diagnostics;
-    use PADA::analysis::hint::hint_level_from_number;
-    use PADA::config::model::Config;
-    use PADA::history::{AgentDecision, StepBuilder, ToolCall};
-    use PADA::models::Assignment;
-    use PADA::tools::compiler::CompilerTool;
+) -> pada::error::Result<()> {
+    use pada::analysis::classifier::classify_compile_diagnostics;
+    use pada::analysis::error_parser::parse_diagnostics;
+    use pada::analysis::hint::hint_level_from_number;
+    use pada::config::model::Config;
+    use pada::history::{AgentDecision, StepBuilder, ToolCall};
+    use pada::models::Assignment;
+    use pada::tools::compiler::CompilerTool;
 
     // 1. 读取题目
     let problem_content = std::fs::read_to_string(&problem_path).map_err(|e| {
-        PADA::error::PadaError::FileNotFound(format!("读取题目失败: {}", e))
+        pada::error::PadaError::FileNotFound(format!("读取题目失败: {}", e))
     })?;
     let assignment = Assignment {
         title: problem_path
@@ -151,7 +151,7 @@ fn run_diagnose(
     };
 
     // 2. 确定提示等级
-    let level = hint_level_from_number(hint_level).unwrap_or(PADA::models::HintLevel::Category);
+    let level = hint_level_from_number(hint_level).unwrap_or(pada::models::HintLevel::Category);
 
     // 3. 加载模型配置（用于后续 LLM 调用）
     let _model_config = config_path.as_ref().and_then(|p| {
@@ -239,7 +239,7 @@ fn run_diagnose(
 
     // 8. 预算控制（R6）
     if let Some(budget) = budget {
-        use PADA::telemetry::UsageTracker;
+        use pada::telemetry::UsageTracker;
         let mut tracker = UsageTracker::new();
         tracker.set_session_budget(budget);
         println!("{}", tracker.summary());
@@ -253,9 +253,9 @@ fn run_diagnose(
 
 /// 从诊断与分类结果构建报告。
 fn build_report(
-    diags: &[PADA::analysis::error_parser::RustcDiagnostic],
-    classified: &[PADA::models::Diagnostic],
-    level: PADA::models::HintLevel,
+    diags: &[pada::analysis::error_parser::RustcDiagnostic],
+    classified: &[pada::models::Diagnostic],
+    level: pada::models::HintLevel,
 ) -> DiagnosticReport {
     let mut report = DiagnosticReport::new();
     for (d, c) in diags.iter().zip(classified.iter()) {
@@ -280,13 +280,13 @@ fn maybe_save(session: &Session, save_path: Option<&std::path::Path>) {
 }
 
 /// 输出报告到控制台或导出为 Markdown 文件。
-fn print_report(report: &DiagnosticReport, report_path: Option<&std::path::Path>) -> PADA::error::Result<()> {
+fn print_report(report: &DiagnosticReport, report_path: Option<&std::path::Path>) -> pada::error::Result<()> {
     print!("{}", report.to_text());
 
     if let Some(path) = report_path {
         let markdown = report.to_markdown();
         std::fs::write(path, markdown)
-            .map_err(|e| PADA::error::PadaError::Config(format!("写入报告失败: {}", e)))?;
+            .map_err(|e| pada::error::PadaError::Config(format!("写入报告失败: {}", e)))?;
         eprintln!("诊断报告已导出: {}", path.display());
     }
 

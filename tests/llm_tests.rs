@@ -7,8 +7,8 @@
 //! cargo test --test llm_tests
 //! ```
 
-use PADA::agent::llm::{ChatMessage, LlmClient, LlmResponse};
-use PADA::config::model::ModelConfig;
+use pada::agent::llm::{ChatMessage, LlmClient, LlmResponse};
+use pada::config::model::ModelConfig;
 use serde_json::json;
 
 // ============================================================

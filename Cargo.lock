@@ -3,20 +3,6 @@
 version = 4
 
 [[package]]
-name = "PADA"
-version = "0.1.0"
-dependencies = [
- "clap",
- "indicatif",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "toml",
- "ureq",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,6 +490,20 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "pada"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "indicatif",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "ureq",
+]
 
 [[package]]
 name = "percent-encoding"

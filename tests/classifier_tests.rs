@@ -6,13 +6,13 @@
 //! cargo test --test classifier_tests
 //! ```
 
-use PADA::analysis::classifier::{
+use pada::analysis::classifier::{
     classify_compile_diagnostic, classify_compile_diagnostics, classify_test_failure,
     code_to_knowledge_point,
 };
-use PADA::analysis::error_parser::{RustcDiagnostic, Severity, parse_diagnostics};
-use PADA::models::{ErrorCategory, KnowledgePoint};
-use PADA::tools::compiler::CompilerTool;
+use pada::analysis::error_parser::{RustcDiagnostic, Severity, parse_diagnostics};
+use pada::models::{ErrorCategory, KnowledgePoint};
+use pada::tools::compiler::CompilerTool;
 use std::path::PathBuf;
 
 fn fixture(relative: &str) -> PathBuf {

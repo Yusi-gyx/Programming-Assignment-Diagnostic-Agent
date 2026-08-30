@@ -6,10 +6,10 @@
 //! cargo test --test diagnostic_tests
 //! ```
 
-use PADA::analysis::error_parser::{
+use pada::analysis::error_parser::{
     Severity, parse_diagnostics, parse_header, parse_location, parse_note,
 };
-use PADA::tools::compiler::CompilerTool;
+use pada::tools::compiler::CompilerTool;
 use std::path::PathBuf;
 
 fn fixture(relative: &str) -> PathBuf {

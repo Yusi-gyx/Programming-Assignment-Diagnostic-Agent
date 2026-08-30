@@ -6,22 +6,22 @@
 //!
 //! 同时覆盖编译通过 → 运行测试 → 测试失败 → 逻辑错误分类 的路径。
 
-use PADA::agent::progress::{CancelToken, DiagnosticStage, SilentProgress, ProgressReporter};
-use PADA::agent::llm::LlmResponse;
-use PADA::analysis::classifier::{
+use pada::agent::progress::{CancelToken, DiagnosticStage, SilentProgress, ProgressReporter};
+use pada::agent::llm::LlmResponse;
+use pada::analysis::classifier::{
     classify_compile_diagnostics, classify_test_failure,
 };
-use PADA::analysis::error_parser::parse_diagnostics;
-use PADA::analysis::hint::{
+use pada::analysis::error_parser::parse_diagnostics;
+use pada::analysis::hint::{
     generate_compile_hint, generate_test_hint, hint_level_from_number, next_hint_level,
 };
-use PADA::config::model::{Config, ModelConfig};
-use PADA::history::{AgentDecision, Session, StepBuilder, ToolCall};
-use PADA::models::{Assignment, ErrorCategory, HintLevel, KnowledgePoint};
-use PADA::report::{CompileReportEntry, DiagnosticReport};
-use PADA::telemetry::{UsageTracker, calculate_cost};
-use PADA::tools::compiler::CompilerTool;
-use PADA::tools::runner::{TestCase, TestRunner};
+use pada::config::model::{Config, ModelConfig};
+use pada::history::{AgentDecision, Session, StepBuilder, ToolCall};
+use pada::models::{Assignment, ErrorCategory, HintLevel, KnowledgePoint};
+use pada::report::{CompileReportEntry, DiagnosticReport};
+use pada::telemetry::{UsageTracker, calculate_cost};
+use pada::tools::compiler::CompilerTool;
+use pada::tools::runner::{TestCase, TestRunner};
 use std::path::PathBuf;
 
 fn fixture(relative: &str) -> PathBuf {
@@ -338,7 +338,7 @@ fn test_full_workflow_cooperative_cancel() {
     progress.start(tests.len(), "批量测试");
 
     let mut completed = 0;
-    let mut all_results: Vec<PADA::models::TestResult> = Vec::new();
+    let mut all_results: Vec<pada::models::TestResult> = Vec::new();
 
     for (i, tc) in tests.iter().enumerate() {
         if cancel.is_cancelled() {

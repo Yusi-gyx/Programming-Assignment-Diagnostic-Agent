@@ -8,8 +8,8 @@
 //! source /tmp/opencode/pada_deepseek_key.sh && cargo run --example llm_demo
 //! ```
 
-use PADA::agent::llm::{ChatMessage, LlmClient};
-use PADA::config::model::ModelConfig;
+use pada::agent::llm::{ChatMessage, LlmClient};
+use pada::config::model::ModelConfig;
 
 fn main() {
     let api_key = std::env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| {

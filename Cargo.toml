@@ -1,5 +1,5 @@
 [package]
-name = "PADA"
+name = "pada"
 version = "0.1.0"
 edition = "2024"
 
@@ -16,4 +16,5 @@ indicatif = "0.17"
 tempfile = "3"
 
 [lib]
+name = "pada"
 path = "src/lib.rs"

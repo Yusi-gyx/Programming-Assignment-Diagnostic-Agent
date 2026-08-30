@@ -6,12 +6,12 @@
 //! cargo test --test report_tests
 //! ```
 
-use PADA::analysis::error_parser::{RustcDiagnostic, Severity, SourceLocation};
-use PADA::analysis::hint::{generate_compile_hint, generate_test_hint};
-use PADA::models::{
+use pada::analysis::error_parser::{RustcDiagnostic, Severity, SourceLocation};
+use pada::analysis::hint::{generate_compile_hint, generate_test_hint};
+use pada::models::{
     Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult,
 };
-use PADA::report::{CompileReportEntry, DiagnosticReport, TestReportEntry};
+use pada::report::{CompileReportEntry, DiagnosticReport, TestReportEntry};
 
 // ============================================================
 // 辅助构造函数

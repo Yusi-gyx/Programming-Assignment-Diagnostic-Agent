@@ -6,7 +6,7 @@
 //! cargo test --test progress_tests
 //! ```
 
-use PADA::agent::progress::{
+use pada::agent::progress::{
     CancelToken, DiagnosticStage, ProgressReporter, SilentProgress,
 };
 use std::sync::Arc;
@@ -196,10 +196,10 @@ fn test_diagnostic_stage_eq() {
 
 #[test]
 fn test_cooperative_cancellation_in_batch() {
-    use PADA::tools::runner::{TestCase, TestRunner};
+    use pada::tools::runner::{TestCase, TestRunner};
 
     // 编译一个测试程序
-    use PADA::tools::compiler::CompilerTool;
+    use pada::tools::compiler::CompilerTool;
     use std::path::PathBuf;
     fn fixture(relative: &str) -> PathBuf {
         let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

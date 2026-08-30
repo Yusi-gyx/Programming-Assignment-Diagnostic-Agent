@@ -6,15 +6,15 @@
 //! cargo test --test hint_tests
 //! ```
 
-use PADA::analysis::classifier::classify_compile_diagnostics;
-use PADA::analysis::error_parser::{RustcDiagnostic, Severity, SourceLocation, parse_diagnostics};
-use PADA::analysis::hint::{
+use pada::analysis::classifier::classify_compile_diagnostics;
+use pada::analysis::error_parser::{RustcDiagnostic, Severity, SourceLocation, parse_diagnostics};
+use pada::analysis::hint::{
     code_to_direction, error_category_text, format_location, generate_compile_hint,
     generate_test_hint, hint_level_as_number, hint_level_from_number, knowledge_point_text,
     next_hint_level,
 };
-use PADA::models::{Diagnostic, ErrorCategory, HintLevel, KnowledgePoint};
-use PADA::tools::compiler::CompilerTool;
+use pada::models::{Diagnostic, ErrorCategory, HintLevel, KnowledgePoint};
+use pada::tools::compiler::CompilerTool;
 use std::path::PathBuf;
 
 fn fixture(relative: &str) -> PathBuf {

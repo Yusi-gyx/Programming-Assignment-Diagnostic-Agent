@@ -7,7 +7,7 @@
 //! cargo test --test compiler_tests
 //! ```
 
-use PADA::tools::compiler::CompilerTool;
+use pada::tools::compiler::CompilerTool;
 use std::path::PathBuf;
 
 /// 获取测试 fixture 的绝对路径
