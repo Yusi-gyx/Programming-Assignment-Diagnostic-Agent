@@ -28,8 +28,8 @@
 //! ```
 
 use indicatif::{ProgressBar, ProgressStyle};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ============================================================
 // 取消令牌
@@ -135,11 +135,9 @@ impl CliProgress {
     pub fn new() -> Self {
         let bar = ProgressBar::new(0);
         bar.set_style(
-            ProgressStyle::with_template(
-                "{prefix} {bar:20.cyan/blue} {pos}/{len} {msg}",
-            )
-            .unwrap()
-            .progress_chars("█░"),
+            ProgressStyle::with_template("{prefix} {bar:20.cyan/blue} {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("█░"),
         );
         Self { bar }
     }
@@ -168,8 +166,7 @@ impl ProgressReporter for CliProgress {
     }
 
     fn cancelled(&self, message: &str) {
-        self.bar
-            .finish_with_message(format!("已取消: {}", message));
+        self.bar.finish_with_message(format!("已取消: {}", message));
     }
 }
 

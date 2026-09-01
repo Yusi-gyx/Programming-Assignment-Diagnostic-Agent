@@ -105,6 +105,16 @@ pub fn build_prompt(assignment: &Assignment) -> Vec<ChatMessage> {
     vec![system, user]
 }
 
+/// 在测试生成提示中注入由 Rust 计算的学习画像。
+pub fn build_prompt_with_profile(
+    assignment: &Assignment,
+    profile_summary: &str,
+) -> Vec<ChatMessage> {
+    let mut messages = build_prompt(assignment);
+    messages.insert(1, ChatMessage::system(profile_summary));
+    messages
+}
+
 // ============================================================
 // 响应解析（确定性）
 // ============================================================
@@ -201,6 +211,15 @@ impl TestGenerator {
     /// 获取 LLM 响应（不解析），供调用方自行处理或调试。
     pub fn generate_raw(&self, assignment: &Assignment) -> Result<LlmResponse> {
         let messages = build_prompt(assignment);
-        Ok(self.client.chat(&messages)?)
+        self.client.chat(&messages)
+    }
+
+    pub fn generate_raw_with_profile(
+        &self,
+        assignment: &Assignment,
+        profile_summary: &str,
+    ) -> Result<LlmResponse> {
+        self.client
+            .chat(&build_prompt_with_profile(assignment, profile_summary))
     }
 }

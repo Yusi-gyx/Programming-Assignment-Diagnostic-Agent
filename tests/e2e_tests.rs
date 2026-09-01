@@ -6,11 +6,9 @@
 //!
 //! 同时覆盖编译通过 → 运行测试 → 测试失败 → 逻辑错误分类 的路径。
 
-use pada::agent::progress::{CancelToken, DiagnosticStage, SilentProgress, ProgressReporter};
 use pada::agent::llm::LlmResponse;
-use pada::analysis::classifier::{
-    classify_compile_diagnostics, classify_test_failure,
-};
+use pada::agent::progress::{CancelToken, DiagnosticStage, ProgressReporter, SilentProgress};
+use pada::analysis::classifier::{classify_compile_diagnostics, classify_test_failure};
 use pada::analysis::error_parser::parse_diagnostics;
 use pada::analysis::hint::{
     generate_compile_hint, generate_test_hint, hint_level_from_number, next_hint_level,
@@ -124,7 +122,10 @@ fn test_full_workflow_compile_error() {
     assert!(text.contains("E0382"), "报告应含错误码");
     assert!(text.contains("知识点"), "报告应含知识点行");
     assert!(markdown.contains("# 诊断报告"), "Markdown 应有标题");
-    assert!(markdown.contains("## 编译诊断"), "Markdown 应有编译诊断章节");
+    assert!(
+        markdown.contains("## 编译诊断"),
+        "Markdown 应有编译诊断章节"
+    );
 
     // 步骤 6：会话轨迹记录（R5）
     let mut session = Session::new(&assignment.title);
@@ -151,11 +152,7 @@ fn test_full_workflow_compile_error() {
                 "stderr",
                 &format!("{} 条诊断", diags.len()),
             ))
-            .tool_call(ToolCall::new(
-                "classify",
-                "E0382",
-                "Ownership, 置信度 0.95",
-            ))
+            .tool_call(ToolCall::new("classify", "E0382", "Ownership, 置信度 0.95"))
             .decision(AgentDecision::new("parsing", "映射到知识点 Ownership"))
             .build(),
     );
@@ -177,9 +174,9 @@ fn test_full_workflow_test_failure() {
 
     // 准备测试用例：故意设置错误的期望输出
     let tests = vec![
-        TestCase::new("normal", "3\n\n", "6"),      // 正确：3 → 6（但实际也是3，故意设错期望）
-        TestCase::new("zero", "0\n\n", "0"),        // 正确：0 → 0
-        TestCase::new("negative", "-5\n\n", "-10"),  // 故意错误期望
+        TestCase::new("normal", "3\n\n", "6"), // 正确：3 → 6（但实际也是3，故意设错期望）
+        TestCase::new("zero", "0\n\n", "0"),   // 正确：0 → 0
+        TestCase::new("negative", "-5\n\n", "-10"), // 故意错误期望
     ];
 
     // 运行测试
@@ -200,7 +197,10 @@ fn test_full_workflow_test_failure() {
             &failure.expected_output,
         );
         assert_eq!(diagnostic.category, ErrorCategory::LogicError);
-        assert!(diagnostic.knowledge_points.is_empty(), "逻辑错误知识点需 LLM 判断");
+        assert!(
+            diagnostic.knowledge_points.is_empty(),
+            "逻辑错误知识点需 LLM 判断"
+        );
     }
 
     // 生成测试失败的分层提示
@@ -212,8 +212,7 @@ fn test_full_workflow_test_failure() {
         HintLevel::Direction,
     );
     assert!(
-        hint.content.contains("0")
-            || hint.content.contains(failure.expected_output.trim()),
+        hint.content.contains("0") || hint.content.contains(failure.expected_output.trim()),
         "Direction 提示应含期望或实际输出"
     );
 }
@@ -331,7 +330,13 @@ fn test_full_workflow_cooperative_cancel() {
     let progress = SilentProgress;
 
     let tests: Vec<TestCase> = (0..10)
-        .map(|i| TestCase::new(format!("case_{}", i), format!("{}\n\n", i), format!("{}", i)))
+        .map(|i| {
+            TestCase::new(
+                format!("case_{}", i),
+                format!("{}\n\n", i),
+                format!("{}", i),
+            )
+        })
         .collect();
 
     let test_runner = TestRunner::new();

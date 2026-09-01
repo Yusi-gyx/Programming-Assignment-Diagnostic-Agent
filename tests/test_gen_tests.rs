@@ -9,7 +9,7 @@
 
 use pada::models::Assignment;
 use pada::tools::test_gen::{
-    boundary_case_types, build_prompt, parse_test_cases,
+    boundary_case_types, build_prompt, build_prompt_with_profile, parse_test_cases,
 };
 
 // ============================================================
@@ -65,7 +65,10 @@ fn test_build_prompt_system_specifies_json_format() {
     assert!(system.contains("JSON"), "应要求 JSON 格式");
     assert!(system.contains("name"), "应要求 name 字段");
     assert!(system.contains("input"), "应要求 input 字段");
-    assert!(system.contains("expected_output"), "应要求 expected_output 字段");
+    assert!(
+        system.contains("expected_output"),
+        "应要求 expected_output 字段"
+    );
 }
 
 #[test]
@@ -81,7 +84,10 @@ fn test_build_prompt_system_is_detailed() {
     assert!(system.contains("测试用例生成"), "应设定生成器角色");
     assert!(system.contains("边界"), "应提及边界测试");
     // 应指定用例数量范围
-    assert!(system.contains("5") && system.contains("8"), "应指定用例数量范围");
+    assert!(
+        system.contains("5") && system.contains("8"),
+        "应指定用例数量范围"
+    );
 }
 
 #[test]
@@ -115,6 +121,17 @@ fn test_build_prompt_user_includes_boundary_types() {
             user
         );
     }
+}
+
+#[test]
+fn test_profile_summary_is_injected() {
+    let assignment = Assignment {
+        title: "练习".into(),
+        description: "描述".into(),
+    };
+    let messages = build_prompt_with_profile(&assignment, "学习画像：Ownership 较弱");
+    assert_eq!(messages[1].role, "system");
+    assert!(messages[1].content.contains("Ownership"));
 }
 
 // ============================================================

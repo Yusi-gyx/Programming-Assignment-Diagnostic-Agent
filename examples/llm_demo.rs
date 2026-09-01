@@ -71,8 +71,12 @@ fn main() {
             // 成本换算（每百万 token 的价格）
             let cost_in = resp.input_tokens as f64 * 1.0 / 1_000_000.0;
             let cost_out = resp.output_tokens as f64 * 2.0 / 1_000_000.0;
-            println!("成本(元)    : {:.6} (输入 {:.6} + 输出 {:.6})",
-                cost_in + cost_out, cost_in, cost_out);
+            println!(
+                "成本(元)    : {:.6} (输入 {:.6} + 输出 {:.6})",
+                cost_in + cost_out,
+                cost_in,
+                cost_out
+            );
             println!("耗时        : {:.2?}", elapsed);
         }
         Err(e) => {

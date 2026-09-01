@@ -8,9 +8,7 @@
 
 use pada::analysis::error_parser::{RustcDiagnostic, Severity, SourceLocation};
 use pada::analysis::hint::{generate_compile_hint, generate_test_hint};
-use pada::models::{
-    Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult,
-};
+use pada::models::{Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult};
 use pada::report::{CompileReportEntry, DiagnosticReport, TestReportEntry};
 
 // ============================================================
@@ -280,11 +278,7 @@ fn test_multiple_compile_entries() {
     }
 
     let text = report.to_text();
-    assert_eq!(
-        text.matches("[编译错误]").count(),
-        3,
-        "应有 3 条编译诊断"
-    );
+    assert_eq!(text.matches("[编译错误]").count(), 3, "应有 3 条编译诊断");
 }
 
 // ============================================================

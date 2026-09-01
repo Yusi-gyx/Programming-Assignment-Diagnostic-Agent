@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 /// 单个测试用例定义
 ///
 /// 描述「给定输入应当产生期望输出」的判定契约。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TestCase {
     /// 用例名称
     pub name: String,

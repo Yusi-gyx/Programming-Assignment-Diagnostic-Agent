@@ -46,7 +46,11 @@ pub struct ToolCall {
 
 impl ToolCall {
     /// 创建一条工具调用记录。
-    pub fn new(tool: impl Into<String>, params: impl Into<String>, output: impl Into<String>) -> Self {
+    pub fn new(
+        tool: impl Into<String>,
+        params: impl Into<String>,
+        output: impl Into<String>,
+    ) -> Self {
         Self {
             tool: tool.into(),
             params: params.into(),

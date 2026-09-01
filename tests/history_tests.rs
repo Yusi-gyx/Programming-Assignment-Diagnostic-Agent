@@ -8,9 +8,7 @@
 
 use pada::agent::llm::{ChatMessage, LlmResponse};
 use pada::config::model::ModelConfig;
-use pada::history::{
-    AgentDecision, LlmExchange, Session, StepBuilder, ToolCall,
-};
+use pada::history::{AgentDecision, LlmExchange, Session, StepBuilder, ToolCall};
 use pada::telemetry::UsageRecord;
 
 // ============================================================
@@ -116,9 +114,7 @@ fn test_step_builder_with_llm() {
         usage: Some(make_usage()),
     };
 
-    let step = StepBuilder::new(2)
-        .llm_exchange(exchange)
-        .build();
+    let step = StepBuilder::new(2).llm_exchange(exchange).build();
 
     assert!(step.llm_exchange.is_some());
     let ex = step.llm_exchange.unwrap();
@@ -144,14 +140,10 @@ fn test_session_creation() {
 fn test_session_add_steps() {
     let mut session = Session::new("test");
 
-    let step1 = StepBuilder::new(0)
-        .user_input("代码1")
-        .build();
+    let step1 = StepBuilder::new(0).user_input("代码1").build();
     session.add_step(step1);
 
-    let step2 = StepBuilder::new(1)
-        .user_input("代码2")
-        .build();
+    let step2 = StepBuilder::new(1).user_input("代码2").build();
     session.add_step(step2);
 
     assert_eq!(session.step_count(), 2);
@@ -190,7 +182,9 @@ fn test_session_save_load_roundtrip() {
     let mut session = Session::new("所有权诊断");
     session.add_step(
         StepBuilder::new(0)
-            .user_input("fn main() { let s = String::from(\"hi\"); let t = s; println!(\"{}\", s); }")
+            .user_input(
+                "fn main() { let s = String::from(\"hi\"); let t = s; println!(\"{}\", s); }",
+            )
             .tool_call(ToolCall::new("compile", "main.rs", "E0382"))
             .decision(AgentDecision::new("compile", "编译失败，分析错误"))
             .build(),

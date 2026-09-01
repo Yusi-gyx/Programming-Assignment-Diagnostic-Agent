@@ -342,6 +342,23 @@ pada diagnose --problem problem.md --code main.rs --report report.md
 | `\help` | 显示帮助 |
 | `\exit` | 退出 |
 
+为降低命令记忆成本，命令前的反斜杠可省略。真实终端默认进入导师模式；
+`--no-interactive` 可用于 CI / 脚本，`--step` 会在编译、测试生成与分析阶段等待确认。
+用户修改源文件后执行 `recheck` 即可在同一会话继续诊断。
+
+V1 增强参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--tests <file>` | 加载 JSON 格式的输入/期望输出测试 |
+| `--generate-tests` | 使用所选模型生成边界测试并实际运行 |
+| `--step` | 逐阶段确认执行 |
+| `--no-interactive` | 单次执行后退出 |
+
+V2 学习画像使用 `--memory <file>` 持久化。会话内 `progress` 查看掌握度，
+`understood` / `notyet` 记录对当前诊断知识点的用户反馈。画像更新、置信度、
+遗忘衰减和薄弱点排序均由 Rust 完成；画像摘要仅作为上下文注入 LLM。
+
 `\process` 统一输出格式：
 
 ```text
@@ -392,6 +409,10 @@ pada diagnose --problem problem.md --code main.rs --report report.md
 * 建立用户知识掌握模型
 * 识别反复出现的薄弱知识点
 * 支持多种编程语言，用户可选
+
+当前 V2 迭代已实现前三项中的学习画像、历史证据与薄弱点识别；多语言后端仍作为
+后续独立里程碑，当前 CLI 保持只接受 Rust，避免在没有相应编译器错误映射与测试
+判定能力时宣称不完整的语言支持。
 
 ---
 

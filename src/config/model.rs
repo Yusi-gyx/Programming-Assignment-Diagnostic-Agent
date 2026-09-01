@@ -112,10 +112,7 @@ impl Config {
         let mut profiles = HashMap::new();
 
         // 本地模型 profile（Ollama，无需 key）
-        profiles.insert(
-            "local".into(),
-            ModelConfig::local("qwen2.5-coder", 32768),
-        );
+        profiles.insert("local".into(), ModelConfig::local("qwen2.5-coder", 32768));
 
         // 云端模型 profile（DeepSeek，需填写 key）
         profiles.insert(

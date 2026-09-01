@@ -162,7 +162,12 @@ fn format_compile_entry_text(entry: &CompileReportEntry) -> String {
         .map(|c| format!("  {} ({})", c, diag.message))
         .unwrap_or_else(|| format!("  ({})", diag.message));
 
-    let mut out = format!("[{}] {}{}\n", category_label(classified), location_str, code_str);
+    let mut out = format!(
+        "[{}] {}{}\n",
+        category_label(classified),
+        location_str,
+        code_str
+    );
 
     // 知识点行
     let kps: Vec<&str> = classified
@@ -238,8 +243,14 @@ fn format_test_entry_markdown(entry: &TestReportEntry) -> String {
     let result = &entry.result;
 
     let mut out = format!("### 测试失败: `{}`\n\n", result.name);
-    out.push_str(&format!("- **期望输出**: `{}`\n", result.expected_output.trim()));
-    out.push_str(&format!("- **实际输出**: `{}`\n", result.actual_output.trim()));
+    out.push_str(&format!(
+        "- **期望输出**: `{}`\n",
+        result.expected_output.trim()
+    ));
+    out.push_str(&format!(
+        "- **实际输出**: `{}`\n",
+        result.actual_output.trim()
+    ));
     out.push_str("- **知识点**: 待分析\n");
     out.push_str(&format!("- **提示**: {}\n\n", entry.hint.content));
 

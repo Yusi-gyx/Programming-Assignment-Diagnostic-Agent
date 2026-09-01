@@ -6,9 +6,7 @@
 //! cargo test --test progress_tests
 //! ```
 
-use pada::agent::progress::{
-    CancelToken, DiagnosticStage, ProgressReporter, SilentProgress,
-};
+use pada::agent::progress::{CancelToken, DiagnosticStage, ProgressReporter, SilentProgress};
 use std::sync::Arc;
 use std::thread;
 

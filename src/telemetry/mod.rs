@@ -49,11 +49,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// ```
 ///
 /// 这是纯函数，便于离线测试。
-pub fn calculate_cost(
-    input_tokens: usize,
-    output_tokens: usize,
-    config: &ModelConfig,
-) -> f64 {
+pub fn calculate_cost(input_tokens: usize, output_tokens: usize, config: &ModelConfig) -> f64 {
     let input_cost = input_tokens as f64 * config.input_price / 1_000_000.0;
     let output_cost = output_tokens as f64 * config.output_price / 1_000_000.0;
     input_cost + output_cost

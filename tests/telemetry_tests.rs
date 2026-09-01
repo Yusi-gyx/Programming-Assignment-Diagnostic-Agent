@@ -8,9 +8,7 @@
 
 use pada::agent::llm::LlmResponse;
 use pada::config::model::ModelConfig;
-use pada::telemetry::{
-    calculate_cost, UsageRecord, UsageTracker,
-};
+use pada::telemetry::{UsageRecord, UsageTracker, calculate_cost};
 
 /// 构造一个模型配置（价格便于心算：输入 1 元/百万，输出 2 元/百万）
 fn make_config() -> ModelConfig {
@@ -41,7 +39,11 @@ fn test_calculate_cost_basic() {
 fn test_calculate_cost_small() {
     // 输入 100 * 1/1M = 0.0001；输出 50 * 2/1M = 0.0001；合计 0.0002
     let cost = calculate_cost(100, 50, &make_config());
-    assert!((cost - 0.0002).abs() < 1e-9, "成本应为 0.0002，实际: {}", cost);
+    assert!(
+        (cost - 0.0002).abs() < 1e-9,
+        "成本应为 0.0002，实际: {}",
+        cost
+    );
 }
 
 #[test]
