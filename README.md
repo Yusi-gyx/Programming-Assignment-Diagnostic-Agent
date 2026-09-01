@@ -27,7 +27,29 @@ cd ProgrammingAssignmentDiagnosticAgent
 cargo build --release
 ```
 
-之后可以使用 `target/release/pada`。开发时也可以将下文的 `pada` 替换为 `cargo run --`。
+编译完成后，可直接运行生成的二进制文件：
+
+```bash
+./target/release/pada --help
+```
+
+如果希望在任意目录直接使用 `pada` 命令，需要将二进制所在目录加入 `PATH`：
+
+```bash
+export PATH="$(pwd)/target/release:$PATH"
+```
+
+以上设置只对当前终端会话生效。若要永久生效，请将这行命令加入 `~/.bashrc`、
+`~/.zshrc` 或当前 Shell 对应的配置文件，然后重新打开终端或加载配置文件。
+
+也可以将二进制复制到已经位于 `PATH` 中的目录，例如：
+
+```bash
+sudo cp target/release/pada /usr/local/bin/pada
+pada --help
+```
+
+开发时无需修改 `PATH`，只需将下文的 `pada` 替换为 `cargo run --`。
 
 ## 快速开始
 
