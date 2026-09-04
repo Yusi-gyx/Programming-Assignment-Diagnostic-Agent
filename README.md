@@ -91,7 +91,7 @@ pada[3]> recheck
 | `notyet` | 记录“还没理解” |
 | `usage` | 查看 Token 用量与成本 |
 | `config` | 打开模型配置向导，创建、更新或切换 profile |
-| `save <文件名>` | 手动导出当前会话到统一目录 |
+| `save <文件名>` | 手动导出当前会话；重名时确认覆盖或改名 |
 | `help` | 查看命令帮助 |
 | `exit` | 退出 |
 
@@ -194,6 +194,8 @@ pada diagnose --problem problem.md --code main.rs \
   --history session.json
 ```
 
+手动导出会话时会先检查目标文件：交互模式遇到重名会询问是否覆盖，选择不覆盖后可继续输入新文件名；非交互模式遇到重名会停止导出并提示更换名称，不会静默覆盖已有记录。
+
 ### 学习画像
 
 学习画像用于记录“在哪些知识点上练习过、掌握度如何、距离上次练习多久”，并根据诊断结果与 `understood` / `notyet` 反馈更新。默认自动保存在 `~/.pada/learning/profile.json`，无需额外参数；在导师模式输入 `progress` 即可查看。
@@ -202,7 +204,7 @@ pada diagnose --problem problem.md --code main.rs \
 
 ## 使用大模型生成边界测试
 
-PADA 支持 OpenAI 兼容接口，例如 DeepSeek 或本地 Ollama。创建 `config.toml`：
+PADA 支持 OpenAI 兼容接口，例如 DeepSeek 或本地 Ollama。可以手动创建 `~/.pada/config.toml`：
 
 ```toml
 active_profile = "local"
@@ -221,7 +223,6 @@ output_price = 0.0
 
 ```bash
 pada diagnose --problem problem.md --code main.rs \
-  --config config.toml \
   --profile local \
   --generate-tests \
   --budget 20000
@@ -229,9 +230,9 @@ pada diagnose --problem problem.md --code main.rs \
 
 `--budget` 是本次会话的 Token 上限。达到预算后，PADA 会阻止后续模型调用。
 
-Level 5 会在配置模型后实际生成参考方案；没有 `--config` 时会明确提示如何配置，不再显示占位文本。
+每次诊断都会自动读取数据目录中的 `config.toml`；文件不存在时不启用模型。Level 3 会让模型解释相关知识点并给出与作业不同的通用示例，Level 4 会给出经典错误模式和改进方向，但两者都禁止直接生成本题答案；Level 5 会生成结构化参考方案。模型调用期间会显示 `⏳` 状态，完成或失败后显示相应标志。
 
-也可以先正常启动诊断，然后在导师模式输入 `config`。向导提供 DeepSeek、Ollama 和自定义 OpenAI 兼容接口预设，引导填写 profile、endpoint、API key、模型名、上下文长度、reasoning 和价格，确认后自动生成并立即启用配置。未通过 `--config` 指定文件时，向导默认保存到 `~/.pada/config.toml`，后续启动会自动加载该文件；显式传入 `--config` 时仍优先使用指定文件，原有手写 TOML 配置方式保持不变。Endpoint 可以填写服务根地址（如 `http://localhost:11434`），程序会自动补全 OpenAI 兼容路径。Ollama profile 不会发送其接口不兼容的布尔 `reasoning` 扩展字段。
+也可以先正常启动诊断，然后在导师模式输入 `config`。向导提供 DeepSeek、Ollama 和自定义 OpenAI 兼容接口预设，引导填写 profile、endpoint、API key、模型名、上下文长度、reasoning 和价格，确认后保存到数据目录中的 `config.toml` 并立即启用。原有手写 TOML 配置方式保持不变。Endpoint 可以填写服务根地址（如 `http://localhost:11434`），程序会自动补全 OpenAI 兼容路径。Ollama profile 不会发送其接口不兼容的布尔 `reasoning` 扩展字段。
 
 ## 数据目录与颜色
 
@@ -253,11 +254,10 @@ pada --data-dir ./pada-data diagnose --problem problem.md --code main.rs
 | `--hint <1-5>` | 初始提示等级，默认 1 |
 | `--tests <文件>` / `--test <文件>` | JSON 测试用例 |
 | `--generate-tests` | 使用模型生成边界测试 |
-| `--config <文件>` | 模型配置文件 |
-| `--profile <名称>` | 使用指定模型配置 |
+| `--profile <名称>` | 使用默认配置文件中的指定模型 profile |
 | `--budget <数量>` | 会话 Token 预算 |
 | `--report <文件名>` | 导出 Markdown 报告到统一报告目录 |
-| `--save <文件名>` | 手动导出会话到统一会话目录 |
+| `--save <文件名>` | 手动导出会话；非交互模式遇到重名时拒绝覆盖 |
 | `--history <文件>` | 加载历史会话 |
 | `--memory <文件>` | 使用自定义学习画像文件（默认自动使用统一画像） |
 | `--step` | 逐阶段确认执行 |

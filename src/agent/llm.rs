@@ -3,7 +3,7 @@
 //! 职责：
 //! - 封装 OpenAI 兼容的 chat completions API 调用
 //! - 构造请求体、解析响应、提取 token 用量
-//! - 供第 7 步分层提示的 Level 5（参考方案）与后续测试生成使用
+//! - 供第 7 步 Level 3-5 分层提示增强与后续测试生成使用
 //!
 //! 设计原则（AGENTS.md）：
 //! - LLM 只处理需要语义理解的部分（理解题意、生成测试、自然语言化提示）
@@ -39,7 +39,7 @@ use crate::error::{PadaError, Result};
 use crate::{
     analysis::error_parser::RustcDiagnostic,
     analysis::hint::{error_category_text, format_location, knowledge_point_text},
-    models::{Assignment, Diagnostic, TestResult},
+    models::{Assignment, Diagnostic, HintLevel, TestResult},
 };
 use serde::{Deserialize, Serialize};
 
@@ -84,12 +84,14 @@ impl ChatMessage {
     }
 }
 
-/// 构造 Level 5 编译错误参考方案请求。提示模型保留教学过程，而不是只给完整答案。
-pub fn compile_solution_messages(
+/// 构造编译错误的模型增强提示请求。
+pub fn compile_hint_messages(
     assignment: &Assignment,
     source_context: &str,
     diag: &RustcDiagnostic,
     classified: &Diagnostic,
+    level: HintLevel,
+    deterministic_hint: &str,
     profile_summary: &str,
 ) -> Vec<ChatMessage> {
     let points = classified
@@ -100,10 +102,12 @@ pub fn compile_solution_messages(
         .join("、");
     vec![
         ChatMessage::system(format!(
-            "你是 Rust 编程导师。用户已经主动请求最高等级（Level 5）提示。请给出可操作的参考方案，解释关键修改，并尽量只展示与错误相关的最小代码片段。不要编造未提供的信息。\n{profile_summary}"
+            "你是 Rust 编程导师，必须遵守分层教学，不得越级直接给出作业答案。不要输出思维链或 <think> 标签。{}\n{}",
+            hint_level_instruction(level),
+            profile_summary
         )),
         ChatMessage::user(format!(
-            "题目：{}\n题目描述：\n{}\n\n提交内容：\n```rust\n{}\n```\n\n错误类别：{}\n错误位置：{}\n错误码：{}\n错误消息：{}\n相关知识点：{}",
+            "题目：{}\n题目描述：\n{}\n\n提交内容：\n```rust\n{}\n```\n\n错误类别：{}\n错误位置：{}\n错误码：{}\n错误消息：{}\n相关知识点：{}\nRust 基础提示：{}",
             assignment.title,
             assignment.description,
             source_context,
@@ -119,31 +123,106 @@ pub fn compile_solution_messages(
             } else {
                 &points
             },
+            deterministic_hint,
         )),
     ]
 }
 
-/// 构造 Level 5 测试失败参考方案请求。
-pub fn test_solution_messages(
+/// 构造测试失败的模型增强提示请求。
+pub fn test_hint_messages(
     assignment: &Assignment,
     source_context: &str,
     result: &TestResult,
+    classified: &Diagnostic,
+    level: HintLevel,
+    deterministic_hint: &str,
     profile_summary: &str,
 ) -> Vec<ChatMessage> {
+    let points = classified
+        .knowledge_points
+        .iter()
+        .map(|point| knowledge_point_text(*point))
+        .collect::<Vec<_>>()
+        .join("、");
     vec![
         ChatMessage::system(format!(
-            "你是 Rust 编程导师。用户已经主动请求最高等级（Level 5）提示。请依据失败用例给出可操作的参考方案，解释关键修改，并避免无关的完整重写。\n{profile_summary}"
+            "你是 Rust 编程导师，必须遵守分层教学，不得越级直接给出作业答案。不要输出思维链或 <think> 标签。{}\n{}",
+            hint_level_instruction(level),
+            profile_summary
         )),
         ChatMessage::user(format!(
-            "题目：{}\n题目描述：\n{}\n\n提交内容：\n```rust\n{}\n```\n\n失败用例：{}\n期望输出：{}\n实际输出：{}",
+            "题目：{}\n题目描述：\n{}\n\n提交内容：\n```rust\n{}\n```\n\n失败用例：{}\n期望输出：{}\n实际输出：{}\n相关知识点：{}\nRust 基础提示：{}",
             assignment.title,
             assignment.description,
             source_context,
             result.name,
             result.expected_output.trim(),
             result.actual_output.trim(),
+            if points.is_empty() {
+                "待分析"
+            } else {
+                &points
+            },
+            deterministic_hint,
         )),
     ]
+}
+
+/// 保留旧调用入口：构造 Level 5 编译错误请求。
+pub fn compile_solution_messages(
+    assignment: &Assignment,
+    source_context: &str,
+    diag: &RustcDiagnostic,
+    classified: &Diagnostic,
+    profile_summary: &str,
+) -> Vec<ChatMessage> {
+    compile_hint_messages(
+        assignment,
+        source_context,
+        diag,
+        classified,
+        HintLevel::Solution,
+        "",
+        profile_summary,
+    )
+}
+
+/// 保留旧调用入口：构造 Level 5 测试失败请求。
+pub fn test_solution_messages(
+    assignment: &Assignment,
+    source_context: &str,
+    result: &TestResult,
+    profile_summary: &str,
+) -> Vec<ChatMessage> {
+    let classified = Diagnostic {
+        category: crate::models::ErrorCategory::LogicError,
+        knowledge_points: Vec::new(),
+        confidence: 0.0,
+    };
+    test_hint_messages(
+        assignment,
+        source_context,
+        result,
+        &classified,
+        HintLevel::Solution,
+        "",
+        profile_summary,
+    )
+}
+
+fn hint_level_instruction(level: HintLevel) -> &'static str {
+    match level {
+        HintLevel::Concept => {
+            "当前是 Level 3（相关知识点）。严格使用 Markdown 的“### 知识点说明”“### 通用示例”“### 自检问题”三节。解释诊断中已有知识点，并给一个与本题变量、数据和业务场景不同的最小 Rust 示例。示例只演示概念，不分析用户代码的具体改法，不给本题答案。"
+        }
+        HintLevel::Direction => {
+            "当前是 Level 4（修改方向）。严格使用 Markdown 的“### 修改方向”“### 经典错误模式”“### 思考提示”三节。说明应检查的方向，并用一个与本题不同的经典错误写法及通用改进写法作对照。不得生成用户提交的完整修正版，不得直接给出本题答案。"
+        }
+        HintLevel::Solution => {
+            "当前是 Level 5（参考方案）。严格使用 Markdown 的“### 问题原因”“### 修改步骤”“### 关键代码片段”“### 自检”四节。给出可操作的参考方案，但只展示与错误有关的最小代码片段，避免重写无关代码。"
+        }
+        _ => "只解释当前诊断信息，不提供完整答案。",
+    }
 }
 
 // ============================================================

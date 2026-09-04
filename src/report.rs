@@ -113,9 +113,22 @@ impl DiagnosticReport {
 
     /// 面向真实终端的彩色文本。重定向到文件时应继续使用 [`Self::to_text`]。
     pub fn to_colored_text(&self) -> String {
+        let mut in_multiline_hint = false;
         self.to_text()
             .lines()
-            .map(colorize_line)
+            .map(|line| {
+                if line.starts_with('[') {
+                    in_multiline_hint = false;
+                }
+                if line.trim_start().starts_with("提示") {
+                    in_multiline_hint = line.trim_end().ends_with(':');
+                    return colorize_line(line);
+                }
+                if in_multiline_hint && !line.is_empty() {
+                    return format!("\x1b[34;1m{line}\x1b[0m");
+                }
+                colorize_line(line)
+            })
             .collect::<Vec<_>>()
             .join("\n")
             + "\n"
@@ -217,8 +230,7 @@ fn format_compile_entry_text(entry: &CompileReportEntry) -> String {
     };
     out.push_str(&format!("  知识点 : {}\n", kp_str));
 
-    // 提示行
-    out.push_str(&format!("  提示   : {}\n", entry.hint.content));
+    push_text_hint(&mut out, "  提示   :", &entry.hint.content);
 
     out
 }
@@ -235,7 +247,7 @@ fn format_test_entry_text(entry: &TestReportEntry) -> String {
         "  知识点   : {}\n",
         knowledge_points_text(&entry.classified)
     ));
-    out.push_str(&format!("  提示     : {}\n", entry.hint.content));
+    push_text_hint(&mut out, "  提示     :", &entry.hint.content);
 
     out
 }
@@ -271,7 +283,7 @@ fn format_compile_entry_markdown(entry: &CompileReportEntry) -> String {
         kps.join("、")
     };
     out.push_str(&format!("- **知识点**: {}\n", kp_str));
-    out.push_str(&format!("- **提示**: {}\n\n", entry.hint.content));
+    push_markdown_hint(&mut out, &entry.hint.content);
 
     out
 }
@@ -293,7 +305,7 @@ fn format_test_entry_markdown(entry: &TestReportEntry) -> String {
         "- **知识点**: {}\n",
         knowledge_points_text(&entry.classified)
     ));
-    out.push_str(&format!("- **提示**: {}\n\n", entry.hint.content));
+    push_markdown_hint(&mut out, &entry.hint.content);
 
     out
 }
@@ -308,6 +320,33 @@ fn knowledge_points_text(classified: &Diagnostic) -> String {
         "待分析（配置 LLM 后自动映射）".into()
     } else {
         points.join("、")
+    }
+}
+
+fn push_text_hint(out: &mut String, label: &str, content: &str) {
+    if content.contains('\n') {
+        out.push_str(label);
+        out.push('\n');
+        for line in content.lines() {
+            out.push_str("    ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    } else {
+        out.push_str(label);
+        out.push(' ');
+        out.push_str(content);
+        out.push('\n');
+    }
+}
+
+fn push_markdown_hint(out: &mut String, content: &str) {
+    if content.contains('\n') {
+        out.push_str("- **提示**:\n\n");
+        out.push_str(content.trim());
+        out.push_str("\n\n");
+    } else {
+        out.push_str(&format!("- **提示**: {content}\n\n"));
     }
 }
 

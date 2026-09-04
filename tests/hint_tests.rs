@@ -234,7 +234,7 @@ fn test_compile_hint_solution() {
 
     assert_eq!(hint.level, HintLevel::Solution);
     assert!(
-        hint.content.contains("--config"),
+        hint.content.contains("config"),
         "未配置模型时应说明配置方式"
     );
 }
@@ -288,7 +288,7 @@ fn test_test_hint_solution() {
     let hint = generate_test_hint("case_1", "9", "6", HintLevel::Solution);
     assert_eq!(hint.level, HintLevel::Solution);
     assert!(
-        hint.content.contains("--config"),
+        hint.content.contains("config"),
         "未配置模型时应说明配置方式"
     );
 }

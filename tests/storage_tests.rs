@@ -53,7 +53,7 @@ fn resolves_explicit_or_default_model_config() {
     assert_eq!(
         store.resolve_config_path(None),
         Some(store.config_path()),
-        "未传 --config 时应自动发现统一配置"
+        "诊断时应自动发现统一配置"
     );
     assert_eq!(
         store.resolve_config_path(Some(&explicit)),

@@ -1,5 +1,6 @@
 //! PADA CLI：参数解析和交互入口；诊断逻辑由库模块完成。
 use clap::{ArgGroup, Parser, Subcommand};
+use pada::agent::export::{available_export_target, choose_export_target};
 use pada::agent::interaction::{InteractiveCommand, help_text, parse_command};
 use pada::agent::progress::{
     CliProgress, ProgressReporter, SilentProgress, StepChoice, StepController, parse_step_choice,
@@ -63,8 +64,6 @@ enum Commands {
         history: Option<PathBuf>,
         #[arg(long)]
         save: Option<PathBuf>,
-        #[arg(long)]
-        config: Option<PathBuf>,
         /// V2 学习画像文件；不存在时自动创建
         #[arg(long)]
         memory: Option<PathBuf>,
@@ -110,7 +109,6 @@ fn run(cli: Cli) -> pada::error::Result<()> {
             report,
             history,
             save,
-            config,
             step,
             no_interactive,
             generate_tests,
@@ -128,7 +126,7 @@ fn run(cli: Cli) -> pada::error::Result<()> {
                 report,
                 history,
                 save,
-                config,
+                config: None,
                 memory,
                 step,
                 interactive: io::stdin().is_terminal() && !no_interactive,
@@ -168,6 +166,17 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
     options.config = options.config.as_deref().map(absolute_path).transpose()?;
     options.config = store.resolve_config_path(options.config.as_deref());
     options.memory = options.memory.as_deref().map(absolute_path).transpose()?;
+    if let Some(requested) = options.save.as_deref() {
+        options.save = Some(if options.interactive {
+            let stdin = io::stdin();
+            let mut reader = stdin.lock();
+            let stdout = io::stdout();
+            let mut writer = stdout.lock();
+            choose_export_target(store, requested, &mut reader, &mut writer)?
+        } else {
+            available_export_target(store, requested)?
+        });
+    }
     let description = std::fs::read_to_string(&options.problem).map_err(|e| {
         pada::error::PadaError::FileNotFound(format!("{}: {e}", options.problem.display()))
     })?;
@@ -252,7 +261,7 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
     if options.generate_tests {
         let (_, config) = model_config.as_ref().ok_or_else(|| {
             pada::error::PadaError::Config(
-                "--generate-tests 需要 --config（可配合 --profile）".into(),
+                "--generate-tests 需要模型配置；请先在导师模式运行 config".into(),
             )
         })?;
         if !tracker.check_budget() {
@@ -452,8 +461,15 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         if !step_gate(
             &mut stepper,
             "生成诊断报告",
-            if level == HintLevel::Solution && model_config.is_some() {
-                format!("整理 {issue_count} 个问题，并调用模型生成 Level 5 参考方案。")
+            if matches!(
+                level,
+                HintLevel::Concept | HintLevel::Direction | HintLevel::Solution
+            ) && model_config.is_some()
+            {
+                format!(
+                    "整理 {issue_count} 个问题，并调用模型增强 Level {} 提示。",
+                    hint_level_as_number(level)
+                )
             } else {
                 format!("按当前提示等级整理 {issue_count} 个问题及相应提示。")
             },
@@ -461,6 +477,8 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             return Ok(());
         }
         progress.tick(3, "正在生成报告");
+        // 模型调用使用独立的静态状态标志，避免与动态进度条相互覆盖。
+        progress.finish("基础诊断完成");
         solution_hints.enrich(
             &mut report,
             &assignment,
@@ -469,7 +487,6 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             &mut tracker,
             &mut session,
         );
-        progress.finish("诊断完成");
         output_report(&report, options.report.as_deref(), store)?;
         session.add_step(
             StepBuilder::new(session.step_count())
@@ -692,7 +709,14 @@ fn interaction(
                 let target = path.as_deref().map(Path::new).or(default_save);
                 match target {
                     Some(p) => {
-                        let saved = store.export_session(p, session)?;
+                        let chosen = {
+                            let stdin = io::stdin();
+                            let mut reader = stdin.lock();
+                            let stdout = io::stdout();
+                            let mut writer = stdout.lock();
+                            choose_export_target(store, p, &mut reader, &mut writer)?
+                        };
+                        let saved = store.export_session(&chosen, session)?;
                         println!("会话已导出: {}", saved.display());
                     }
                     None => println!(
@@ -776,7 +800,7 @@ fn load_profile(
     let Some(path) = config_path else {
         if requested.is_some() {
             return Err(pada::error::PadaError::Config(
-                "找不到模型配置；请先在导师模式运行 config，或使用 --config 指定配置文件".into(),
+                "找不到模型配置；请先进入导师模式运行 config".into(),
             ));
         }
         return Ok(None);

@@ -170,6 +170,34 @@ fn test_compile_entry_markdown_format() {
     assert!(md.contains("**提示**"), "应有提示字段");
 }
 
+#[test]
+fn multiline_model_hint_is_indented_in_text_and_block_formatted_in_markdown() {
+    let diag = make_diag(Some("E0382"), Some(make_loc()));
+    let classified = make_classified(vec![KnowledgePoint::Ownership]);
+    let hint = pada::analysis::hint::Hint::new(
+        HintLevel::Solution,
+        "### 问题原因\n说明\n\n```rust\nlet x = 1;\n```",
+    );
+    let mut report = DiagnosticReport::new();
+    report.add_compile(CompileReportEntry {
+        diag,
+        classified,
+        hint,
+    });
+
+    let text = report.to_text();
+    assert!(text.contains("  提示   :\n    ### 问题原因"));
+    assert!(text.contains("    ```rust"));
+    assert!(
+        report
+            .to_colored_text()
+            .contains("\x1b[34;1m    ### 问题原因\x1b[0m")
+    );
+    let markdown = report.to_markdown();
+    assert!(markdown.contains("- **提示**:\n\n### 问题原因"));
+    assert!(markdown.contains("```rust\nlet x = 1;\n```"));
+}
+
 // ============================================================
 // 测试失败报告测试
 // ============================================================

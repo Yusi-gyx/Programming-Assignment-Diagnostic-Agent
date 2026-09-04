@@ -8,11 +8,12 @@
 //! ```
 
 use pada::agent::llm::{
-    ChatMessage, LlmClient, LlmResponse, compile_solution_messages, test_solution_messages,
+    ChatMessage, LlmClient, LlmResponse, compile_hint_messages, compile_solution_messages,
+    test_hint_messages, test_solution_messages,
 };
 use pada::analysis::error_parser::{RustcDiagnostic, Severity};
 use pada::config::model::ModelConfig;
-use pada::models::{Assignment, Diagnostic, ErrorCategory, KnowledgePoint, TestResult};
+use pada::models::{Assignment, Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult};
 use serde_json::json;
 
 // ============================================================
@@ -288,4 +289,69 @@ fn level_five_prompts_include_real_diagnostic_context() {
     let messages = test_solution_messages(&assignment, "fn main() {}", &failed, "画像");
     assert!(messages[1].content.contains("empty"));
     assert!(messages[1].content.contains("期望输出：0"));
+}
+
+#[test]
+fn level_three_prompt_requires_generic_example_without_answer() {
+    let assignment = Assignment {
+        title: "移动值".into(),
+        description: "修复所有权错误".into(),
+    };
+    let diagnostic = RustcDiagnostic {
+        severity: Severity::Error,
+        code: Some("E0382".into()),
+        message: "borrow of moved value".into(),
+        location: None,
+        notes: vec![],
+    };
+    let classified = Diagnostic {
+        category: ErrorCategory::CompileError,
+        knowledge_points: vec![KnowledgePoint::Ownership],
+        confidence: 0.95,
+    };
+    let messages = compile_hint_messages(
+        &assignment,
+        "fn main() {}",
+        &diagnostic,
+        &classified,
+        HintLevel::Concept,
+        "知识点：所有权",
+        "学习画像：暂无",
+    );
+    assert!(messages[0].content.contains("Level 3"));
+    assert!(messages[0].content.contains("通用示例"));
+    assert!(messages[0].content.contains("不给本题答案"));
+    assert!(messages[1].content.contains("Rust 基础提示"));
+}
+
+#[test]
+fn level_four_test_prompt_requires_classic_error_pattern() {
+    let assignment = Assignment {
+        title: "偶数求和".into(),
+        description: "计算所有偶数之和".into(),
+    };
+    let result = TestResult {
+        name: "mixed".into(),
+        passed: false,
+        actual_output: "9".into(),
+        expected_output: "6".into(),
+    };
+    let classified = Diagnostic {
+        category: ErrorCategory::LogicError,
+        knowledge_points: vec![KnowledgePoint::Iterator],
+        confidence: 0.7,
+    };
+    let messages = test_hint_messages(
+        &assignment,
+        "fn main() {}",
+        &result,
+        &classified,
+        HintLevel::Direction,
+        "检查筛选条件",
+        "学习画像：暂无",
+    );
+    assert!(messages[0].content.contains("Level 4"));
+    assert!(messages[0].content.contains("经典错误写法"));
+    assert!(messages[0].content.contains("不得生成用户提交的完整修正版"));
+    assert!(messages[1].content.contains("迭代器 / Iterator"));
 }

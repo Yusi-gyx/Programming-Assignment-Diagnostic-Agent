@@ -8,6 +8,7 @@
 //! - 编排 编译 → 运行 → 诊断 → 提示 的完整流程
 //! - 多轮交互与状态管理
 
+pub mod export;
 pub mod interaction;
 pub mod llm;
 pub mod progress;

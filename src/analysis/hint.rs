@@ -6,8 +6,8 @@
 //!
 //! 设计原则（AGENTS.md）：
 //! - 提示级别控制是确定性逻辑，由 Rust 完成
-//! - Level 1-3（类别 / 位置 / 知识点）完全由程序从诊断数据中提取
-//! - Level 4（修改方向）由程序基于错误码给出通用方向
+//! - Level 1-2（类别 / 位置）完全由程序从诊断数据中提取
+//! - Level 3-4 先由程序给出确定性基础提示，配置模型后在上层进行教学增强
 //! - Level 5（参考方案）在上层配置模型后由 LLM 生成；未配置时给出配置指引
 //!
 //! # 提示级别（DESIGN.md §4.3）
@@ -200,7 +200,7 @@ pub fn generate_compile_hint(
         },
         HintLevel::Solution => Hint::new(
             level,
-            "尚未配置 LLM，无法生成参考方案。请使用 --config <config.toml>（可配合 --profile）配置模型。",
+            "尚未配置 LLM，无法生成参考方案。请在导师模式输入 config 配置模型。",
         ),
     }
 }
@@ -276,7 +276,7 @@ pub fn generate_test_hint_with_points(
         ),
         HintLevel::Solution => Hint::new(
             level,
-            "尚未配置 LLM，无法生成参考方案。请使用 --config <config.toml>（可配合 --profile）配置模型。",
+            "尚未配置 LLM，无法生成参考方案。请在导师模式输入 config 配置模型。",
         ),
     }
 }
