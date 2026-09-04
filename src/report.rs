@@ -50,6 +50,8 @@ pub struct CompileReportEntry {
 pub struct TestReportEntry {
     /// 测试结果
     pub result: TestResult,
+    /// 测试失败分类及由模型映射的知识点
+    pub classified: Diagnostic,
     /// 分层提示
     pub hint: Hint,
 }
@@ -229,7 +231,10 @@ fn format_test_entry_text(entry: &TestReportEntry) -> String {
 
     out.push_str(&format!("  期望输出 : {}\n", result.expected_output.trim()));
     out.push_str(&format!("  实际输出 : {}\n", result.actual_output.trim()));
-    out.push_str("  知识点   : 待分析\n");
+    out.push_str(&format!(
+        "  知识点   : {}\n",
+        knowledge_points_text(&entry.classified)
+    ));
     out.push_str(&format!("  提示     : {}\n", entry.hint.content));
 
     out
@@ -284,10 +289,26 @@ fn format_test_entry_markdown(entry: &TestReportEntry) -> String {
         "- **实际输出**: `{}`\n",
         result.actual_output.trim()
     ));
-    out.push_str("- **知识点**: 待分析\n");
+    out.push_str(&format!(
+        "- **知识点**: {}\n",
+        knowledge_points_text(&entry.classified)
+    ));
     out.push_str(&format!("- **提示**: {}\n\n", entry.hint.content));
 
     out
+}
+
+fn knowledge_points_text(classified: &Diagnostic) -> String {
+    let points = classified
+        .knowledge_points
+        .iter()
+        .map(|point| knowledge_point_text(*point))
+        .collect::<Vec<_>>();
+    if points.is_empty() {
+        "待分析（配置 LLM 后自动映射）".into()
+    } else {
+        points.join("、")
+    }
 }
 
 /// 将错误类别转为报告标签。

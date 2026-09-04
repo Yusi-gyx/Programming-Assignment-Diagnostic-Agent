@@ -90,6 +90,7 @@ pada[3]> recheck
 | `understood` | 记录“已经理解” |
 | `notyet` | 记录“还没理解” |
 | `usage` | 查看 Token 用量与成本 |
+| `config` | 打开模型配置向导，创建、更新或切换 profile |
 | `save <文件名>` | 手动导出当前会话到统一目录 |
 | `help` | 查看命令帮助 |
 | `exit` | 退出 |
@@ -128,6 +129,8 @@ pada diagnose --problem problem.md --project ./my_project
 pada diagnose --problem problem.md --code main.rs --step
 ```
 
+逐步模式会在编译、分析/测试和报告生成前说明该阶段的操作与用途。按 Enter 或 `c` 执行当前阶段，输入 `a` 连续执行本轮剩余阶段，`h` 查看说明，`q` 安全取消。执行 `recheck` 后会重新恢复逐步确认；逐步模式下不会同时绘制动态进度条，避免终端内容相互覆盖。
+
 用于脚本或 CI 时，可以关闭导师模式：
 
 ```bash
@@ -158,6 +161,8 @@ pada diagnose --problem problem.md --code main.rs --no-interactive
 ```bash
 pada diagnose --problem problem.md --code main.rs --tests tests.json
 ```
+
+配置模型后，PADA 会把失败用例、题目和代码批量交给模型进行语义判断，并将结果限制映射到内置 Rust 知识点枚举；映射结果会显示在报告和 Level 3 提示中，并写入学习画像。没有配置模型时会显示“配置 LLM 后自动映射”。
 
 ### 导出报告与继续会话
 
@@ -226,6 +231,8 @@ pada diagnose --problem problem.md --code main.rs \
 
 Level 5 会在配置模型后实际生成参考方案；没有 `--config` 时会明确提示如何配置，不再显示占位文本。
 
+也可以先正常启动诊断，然后在导师模式输入 `config`。向导提供 DeepSeek、Ollama 和自定义 OpenAI 兼容接口预设，引导填写 profile、endpoint、API key、模型名、上下文长度、reasoning 和价格，确认后自动生成并立即启用配置。未通过 `--config` 指定文件时，向导默认保存到 `~/.pada/config.toml`，后续启动会自动加载该文件；显式传入 `--config` 时仍优先使用指定文件，原有手写 TOML 配置方式保持不变。Endpoint 可以填写服务根地址（如 `http://localhost:11434`），程序会自动补全 OpenAI 兼容路径。Ollama profile 不会发送其接口不兼容的布尔 `reasoning` 扩展字段。
+
 ## 数据目录与颜色
 
 PADA 的默认数据根目录是 `~/.pada`。可以用全局参数 `--data-dir <目录>` 或环境变量 `PADA_HOME` 覆盖，例如：
@@ -244,7 +251,7 @@ pada --data-dir ./pada-data diagnose --problem problem.md --code main.rs
 | `--code <文件>` | Rust 单文件提交 |
 | `--project <目录>` | Cargo 项目，与 `--code` 二选一 |
 | `--hint <1-5>` | 初始提示等级，默认 1 |
-| `--tests <文件>` | JSON 测试用例 |
+| `--tests <文件>` / `--test <文件>` | JSON 测试用例 |
 | `--generate-tests` | 使用模型生成边界测试 |
 | `--config <文件>` | 模型配置文件 |
 | `--profile <名称>` | 使用指定模型配置 |

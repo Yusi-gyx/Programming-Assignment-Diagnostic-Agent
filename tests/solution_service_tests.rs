@@ -1,5 +1,5 @@
-use pada::agent::llm::{ChatMessage, LlmResponse};
-use pada::agent::solution::{SolutionHintService, SolutionModel};
+use pada::agent::llm::{ChatMessage, ChatModel, LlmResponse};
+use pada::agent::solution::SolutionHintService;
 use pada::analysis::error_parser::{RustcDiagnostic, Severity};
 use pada::analysis::hint::generate_compile_hint;
 use pada::config::model::ModelConfig;
@@ -11,7 +11,7 @@ use pada::telemetry::UsageTracker;
 
 struct MockModel;
 
-impl SolutionModel for MockModel {
+impl ChatModel for MockModel {
     fn chat(&self, messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
         assert!(
             messages

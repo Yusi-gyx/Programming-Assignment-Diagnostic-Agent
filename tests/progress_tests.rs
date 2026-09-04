@@ -6,7 +6,10 @@
 //! cargo test --test progress_tests
 //! ```
 
-use pada::agent::progress::{CancelToken, DiagnosticStage, ProgressReporter, SilentProgress};
+use pada::agent::progress::{
+    CancelToken, DiagnosticStage, ProgressReporter, SilentProgress, StepChoice, StepController,
+    parse_step_choice,
+};
 use std::sync::Arc;
 use std::thread;
 
@@ -247,4 +250,25 @@ fn test_cooperative_cancellation_in_batch() {
 
     // 应执行了 3 组（第 0、1、2），第 3 组因取消而停止
     assert_eq!(completed, 3, "取消后应只完成 3 组");
+}
+
+#[test]
+fn step_mode_understands_friendly_controls() {
+    assert_eq!(parse_step_choice(""), StepChoice::Continue);
+    assert_eq!(parse_step_choice("all"), StepChoice::RunRemaining);
+    assert_eq!(parse_step_choice("q"), StepChoice::Cancel);
+    assert_eq!(parse_step_choice("?"), StepChoice::Help);
+    assert_eq!(parse_step_choice("wat"), StepChoice::Invalid);
+}
+
+#[test]
+fn step_controller_can_run_the_rest_of_a_round() {
+    let mut steps = StepController::new(true, true);
+    steps.begin_round(3);
+    assert!(steps.should_prompt());
+    assert_eq!(steps.next_position(), (1, 3));
+    steps.run_remaining();
+    assert!(!steps.should_prompt());
+    steps.begin_round(2);
+    assert!(steps.should_prompt(), "新一轮 recheck 应恢复逐步确认");
 }

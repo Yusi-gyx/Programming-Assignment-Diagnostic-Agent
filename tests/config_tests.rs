@@ -6,7 +6,7 @@
 //! cargo test --test config_tests
 //! ```
 
-use pada::config::model::{Config, ModelConfig};
+use pada::config::model::{Config, ModelConfig, normalize_chat_endpoint};
 use std::collections::HashMap;
 
 // ============================================================
@@ -21,6 +21,33 @@ fn test_model_config_local() {
     assert!(cfg.api_key.is_empty());
     assert_eq!(cfg.input_price, 0.0);
     assert!(!cfg.reasoning);
+    assert!(cfg.is_ollama());
+    assert_eq!(
+        cfg.chat_endpoint(),
+        "http://localhost:11434/v1/chat/completions"
+    );
+}
+
+#[test]
+fn test_chat_endpoint_accepts_service_or_api_root() {
+    assert_eq!(
+        normalize_chat_endpoint("http://localhost:11434"),
+        "http://localhost:11434/v1/chat/completions"
+    );
+    assert_eq!(
+        normalize_chat_endpoint("http://localhost:11434/v1/"),
+        "http://localhost:11434/v1/chat/completions"
+    );
+    assert_eq!(
+        normalize_chat_endpoint("https://example.com/custom/chat/completions"),
+        "https://example.com/custom/chat/completions"
+    );
+}
+
+#[test]
+fn test_remote_default_port_is_recognized_as_ollama() {
+    let config = ModelConfig::cloud("http://192.168.1.5:11434", "", "qwen3:8b", 8192, 0.0, 0.0);
+    assert!(config.is_ollama());
 }
 
 #[test]

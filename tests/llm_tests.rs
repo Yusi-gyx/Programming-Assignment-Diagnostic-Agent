@@ -69,10 +69,27 @@ fn test_build_request_body_basic() {
 }
 
 #[test]
-fn test_build_request_body_with_reasoning() {
+fn test_ollama_request_omits_incompatible_boolean_reasoning() {
     let client = make_client(true);
     let messages = vec![ChatMessage::user("test")];
     let body = client.build_request_body(&messages);
+
+    assert!(body.get("reasoning").is_none());
+}
+
+#[test]
+fn test_cloud_request_includes_reasoning_when_enabled() {
+    let mut config = ModelConfig::cloud(
+        "https://api.example.com/v1/chat/completions",
+        "key",
+        "reasoner",
+        8192,
+        0.0,
+        0.0,
+    );
+    config.reasoning = true;
+    let client = LlmClient::new(config);
+    let body = client.build_request_body(&[ChatMessage::user("test")]);
 
     assert_eq!(body["reasoning"], true);
 }

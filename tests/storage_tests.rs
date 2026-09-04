@@ -22,6 +22,7 @@ fn stores_each_artifact_in_a_predictable_directory() {
         store.exported_sessions_dir().join("my-session.json")
     );
     assert_eq!(automatic, store.auto_session_path(&session));
+    assert_eq!(store.config_path(), store.root().join("config.toml"));
     assert!(report.exists() && exported.exists() && automatic.exists());
 }
 
@@ -32,6 +33,32 @@ fn ignores_requested_parent_directories_for_managed_exports() {
     assert_eq!(
         store.report_path(Path::new("some/hard/to/find/report.md")),
         store.reports_dir().join("report.md")
+    );
+}
+
+#[test]
+fn resolves_explicit_or_default_model_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = DataStore::new(temp.path().join("pada-data"));
+    let explicit = temp.path().join("manual.toml");
+
+    assert_eq!(
+        store.resolve_config_path(Some(&explicit)),
+        Some(explicit.clone())
+    );
+    assert_eq!(store.resolve_config_path(None), None);
+
+    std::fs::create_dir_all(store.root()).unwrap();
+    std::fs::write(store.config_path(), "active_profile = ''\n").unwrap();
+    assert_eq!(
+        store.resolve_config_path(None),
+        Some(store.config_path()),
+        "未传 --config 时应自动发现统一配置"
+    );
+    assert_eq!(
+        store.resolve_config_path(Some(&explicit)),
+        Some(explicit),
+        "显式配置必须优先"
     );
 }
 

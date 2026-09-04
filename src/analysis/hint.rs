@@ -218,6 +218,16 @@ pub fn generate_compile_hint(
 /// - **Direction (4)**：描述输入 / 期望 / 实际的对照
 /// - **Solution (5)**：先返回模型配置指引，上层配置模型时替换为实际生成内容
 pub fn generate_test_hint(name: &str, actual: &str, expected: &str, level: HintLevel) -> Hint {
+    generate_test_hint_with_points(name, actual, expected, level, &[])
+}
+
+pub fn generate_test_hint_with_points(
+    name: &str,
+    actual: &str,
+    expected: &str,
+    level: HintLevel,
+    points: &[KnowledgePoint],
+) -> Hint {
     // TODO: 实现测试失败分层提示
     //
     // 建议步骤：按 level 分支
@@ -239,7 +249,23 @@ pub fn generate_test_hint(name: &str, actual: &str, expected: &str, level: HintL
     match &level {
         HintLevel::Category => Hint::new(level, "这是一个逻辑错误（测试未通过）".to_string()),
         HintLevel::Location => Hint::new(level, format!("失败的测试用例： {}", name)),
-        HintLevel::Concept => Hint::new(level, "知识点待分析（需结合代码与题目判断）".to_string()),
+        HintLevel::Concept => {
+            if points.is_empty() {
+                Hint::new(level, "知识点待分析（配置 LLM 后自动映射）")
+            } else {
+                Hint::new(
+                    level,
+                    format!(
+                        "知识点：{}",
+                        points
+                            .iter()
+                            .map(|point| knowledge_point_text(*point))
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    ),
+                )
+            }
+        }
         HintLevel::Direction => Hint::new(
             level,
             format!(

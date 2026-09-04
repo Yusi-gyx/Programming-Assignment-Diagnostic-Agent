@@ -11,6 +11,7 @@ fn parses_friendly_and_backslash_commands() {
         InteractiveCommand::Save(Some("session.json".into()))
     );
     assert_eq!(parse_command("progress"), InteractiveCommand::Progress);
+    assert_eq!(parse_command("config"), InteractiveCommand::Config);
     assert_eq!(parse_command("懂了"), InteractiveCommand::Feedback(true));
 }
 

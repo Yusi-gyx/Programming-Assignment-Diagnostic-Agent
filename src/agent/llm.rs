@@ -179,6 +179,17 @@ pub struct LlmClient {
     agent: ureq::Agent,
 }
 
+/// 可替换的聊天模型接口，便于诊断能力共享客户端并进行离线测试。
+pub trait ChatModel {
+    fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse>;
+}
+
+impl ChatModel for LlmClient {
+    fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse> {
+        LlmClient::chat(self, messages)
+    }
+}
+
 impl LlmClient {
     /// 创建客户端。
     pub fn new(config: ModelConfig) -> Self {
@@ -195,20 +206,36 @@ impl LlmClient {
     /// 失败原因包括：网络错误、HTTP 非 2xx、响应格式异常。
     pub fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse> {
         let body = self.build_request_body(messages);
+        let endpoint = self.config.chat_endpoint();
 
         // 构造请求，附带 Authorization header（有 key 时）
         let request = if self.config.api_key.is_empty() {
-            self.agent.post(&self.config.endpoint)
+            self.agent.post(&endpoint)
         } else {
             self.agent
-                .post(&self.config.endpoint)
+                .post(&endpoint)
                 .set("Authorization", &format!("Bearer {}", self.config.api_key))
         };
 
         // 发送 JSON 请求体（send_json 接受任意 Serialize）
-        let response = request
-            .send_json(body)
-            .map_err(|e| PadaError::Llm(format!("HTTP 请求失败: {}", e)))?;
+        let response = match request.send_json(body) {
+            Ok(response) => response,
+            Err(ureq::Error::Status(status, response)) => {
+                let status_text = response.status_text().to_owned();
+                let response_body = response.into_string().unwrap_or_default();
+                return Err(PadaError::Llm(format_http_status_error(
+                    &endpoint,
+                    status,
+                    &status_text,
+                    &response_body,
+                )));
+            }
+            Err(error) => {
+                return Err(PadaError::Llm(format!(
+                    "HTTP 请求失败（{endpoint}）: {error}"
+                )));
+            }
+        };
 
         // 解析响应 JSON
         let json: serde_json::Value = response
@@ -229,8 +256,8 @@ impl LlmClient {
     /// }
     /// ```
     ///
-    /// 当 `reasoning == true` 时额外加入 `"reasoning": true`，
-    /// 兼容部分支持推理链的 API（不支持时会被忽略）。
+    /// 当 `reasoning == true` 时为支持该扩展的云端接口加入
+    /// `"reasoning": true`；Ollama 使用自身的推理模型设置，不发送该字段。
     pub fn build_request_body(&self, messages: &[ChatMessage]) -> serde_json::Value {
         let mut body = serde_json::json!({
             "model": self.config.model_name,
@@ -238,7 +265,9 @@ impl LlmClient {
             "temperature": 0.7,
         });
 
-        if self.config.reasoning {
+        // Ollama 0.33.x 的 OpenAI 兼容接口不接受布尔 reasoning；本地推理模型
+        // 会按模型自身配置工作，因此不发送这个云端扩展字段。
+        if self.config.reasoning && !self.config.is_ollama() {
             body["reasoning"] = serde_json::json!(true);
         }
 
@@ -291,5 +320,40 @@ impl LlmClient {
     /// 获取当前使用的模型配置（供 R6 成本统计使用）。
     pub fn config(&self) -> &ModelConfig {
         &self.config
+    }
+}
+
+fn format_http_status_error(endpoint: &str, status: u16, status_text: &str, body: &str) -> String {
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .or_else(|| json.get("error").and_then(|value| value.as_str()))
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| body.trim().to_owned());
+    let detail = detail.chars().take(800).collect::<String>();
+    if detail.is_empty() {
+        format!("HTTP 请求失败（{endpoint}）: {status} {status_text}")
+    } else {
+        format!("HTTP 请求失败（{endpoint}）: {status} {status_text}；服务端信息: {detail}")
+    }
+}
+
+#[cfg(test)]
+mod internal_tests {
+    use super::format_http_status_error;
+
+    #[test]
+    fn http_status_error_includes_json_message() {
+        let message = format_http_status_error(
+            "http://localhost:11434/v1/chat/completions",
+            400,
+            "Bad Request",
+            r#"{"error":{"message":"invalid reasoning value"}}"#,
+        );
+        assert!(message.contains("400 Bad Request"));
+        assert!(message.contains("invalid reasoning value"));
     }
 }

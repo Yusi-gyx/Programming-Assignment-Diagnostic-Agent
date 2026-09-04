@@ -179,7 +179,11 @@ fn test_test_failure_text_format() {
     let result = make_test_result("test_case_03", "1 2 3", "3 2 1");
     let hint = generate_test_hint("test_case_03", "1 2 3", "3 2 1", HintLevel::Category);
 
-    let entry = TestReportEntry { result, hint };
+    let entry = TestReportEntry {
+        result,
+        classified: make_classified(vec![]),
+        hint,
+    };
     let mut report = DiagnosticReport::new();
     report.add_test(entry);
     let text = report.to_text();
@@ -196,7 +200,11 @@ fn test_test_failure_markdown_format() {
     let result = make_test_result("case_1", "9", "6");
     let hint = generate_test_hint("case_1", "9", "6", HintLevel::Direction);
 
-    let entry = TestReportEntry { result, hint };
+    let entry = TestReportEntry {
+        result,
+        classified: make_classified(vec![]),
+        hint,
+    };
     let mut report = DiagnosticReport::new();
     report.add_test(entry);
     let md = report.to_markdown();
@@ -205,6 +213,26 @@ fn test_test_failure_markdown_format() {
     assert!(md.contains("case_1"), "应有用例名");
     assert!(md.contains("**期望输出**"));
     assert!(md.contains("**实际输出**"));
+}
+
+#[test]
+fn test_failure_report_displays_model_mapped_knowledge_points() {
+    let result = make_test_result("reverse", "1 2 3", "3 2 1");
+    let classified = Diagnostic {
+        category: ErrorCategory::LogicError,
+        knowledge_points: vec![KnowledgePoint::Iterator, KnowledgePoint::AlgorithmLogic],
+        confidence: 0.7,
+    };
+    let hint = generate_test_hint("reverse", "1 2 3", "3 2 1", HintLevel::Concept);
+    let mut report = DiagnosticReport::new();
+    report.add_test(TestReportEntry {
+        result,
+        classified,
+        hint,
+    });
+
+    assert!(report.to_text().contains("迭代器 / Iterator、算法逻辑"));
+    assert!(report.to_markdown().contains("迭代器 / Iterator、算法逻辑"));
 }
 
 // ============================================================
@@ -228,7 +256,11 @@ fn test_mixed_report_text() {
     // 添加测试失败
     let result = make_test_result("case_2", "wrong", "right");
     let hint = generate_test_hint("case_2", "wrong", "right", HintLevel::Category);
-    report.add_test(TestReportEntry { result, hint });
+    report.add_test(TestReportEntry {
+        result,
+        classified: make_classified(vec![]),
+        hint,
+    });
 
     let text = report.to_text();
     assert!(text.contains("[编译错误]"), "应包含编译诊断");
@@ -251,7 +283,11 @@ fn test_mixed_report_markdown_has_both_sections() {
 
     let result = make_test_result("case_1", "x", "y");
     let hint = generate_test_hint("case_1", "x", "y", HintLevel::Category);
-    report.add_test(TestReportEntry { result, hint });
+    report.add_test(TestReportEntry {
+        result,
+        classified: make_classified(vec![]),
+        hint,
+    });
 
     let md = report.to_markdown();
     assert!(md.contains("## 编译诊断"));

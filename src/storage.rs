@@ -56,6 +56,18 @@ impl DataStore {
         self.root.join("learning").join("profile.json")
     }
 
+    pub fn config_path(&self) -> PathBuf {
+        self.root.join("config.toml")
+    }
+
+    /// 显式配置优先；未指定时自动使用统一数据目录中的配置。
+    pub fn resolve_config_path(&self, explicit: Option<&Path>) -> Option<PathBuf> {
+        explicit.map(Path::to_path_buf).or_else(|| {
+            let default = self.config_path();
+            default.exists().then_some(default)
+        })
+    }
+
     pub fn report_path(&self, requested: &Path) -> PathBuf {
         self.reports_dir()
             .join(safe_file_name(requested, "report.md"))

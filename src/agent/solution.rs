@@ -1,6 +1,6 @@
 //! Level 5 参考方案生成与会话记录。
 
-use crate::agent::llm::{LlmClient, compile_solution_messages, test_solution_messages};
+use crate::agent::llm::{ChatModel, LlmClient, compile_solution_messages, test_solution_messages};
 use crate::analysis::hint::Hint;
 use crate::config::model::ModelConfig;
 use crate::history::{AgentDecision, LlmExchange, Session, StepBuilder};
@@ -10,25 +10,9 @@ use crate::report::DiagnosticReport;
 use crate::telemetry::{UsageRecord, UsageTracker};
 use std::collections::HashMap;
 
-pub trait SolutionModel {
-    fn chat(
-        &self,
-        messages: &[crate::agent::llm::ChatMessage],
-    ) -> crate::error::Result<crate::agent::llm::LlmResponse>;
-}
-
-impl SolutionModel for LlmClient {
-    fn chat(
-        &self,
-        messages: &[crate::agent::llm::ChatMessage],
-    ) -> crate::error::Result<crate::agent::llm::LlmResponse> {
-        LlmClient::chat(self, messages)
-    }
-}
-
 pub struct SolutionHintService {
     config: Option<ModelConfig>,
-    model: Option<Box<dyn SolutionModel>>,
+    model: Option<Box<dyn ChatModel>>,
     cache: HashMap<String, String>,
 }
 
@@ -36,7 +20,7 @@ impl SolutionHintService {
     pub fn new(config: Option<ModelConfig>) -> Self {
         let model = config
             .as_ref()
-            .map(|config| Box::new(LlmClient::new(config.clone())) as Box<dyn SolutionModel>);
+            .map(|config| Box::new(LlmClient::new(config.clone())) as Box<dyn ChatModel>);
         Self {
             config,
             model,
@@ -45,7 +29,7 @@ impl SolutionHintService {
     }
 
     /// 注入模型实现，供离线测试或其他兼容后端使用。
-    pub fn with_model(config: ModelConfig, model: Box<dyn SolutionModel>) -> Self {
+    pub fn with_model(config: ModelConfig, model: Box<dyn ChatModel>) -> Self {
         Self {
             config: Some(config),
             model: Some(model),

@@ -206,3 +206,74 @@ impl DiagnosticStage {
         }
     }
 }
+
+// ============================================================
+// 逐步执行模式
+// ============================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepChoice {
+    Continue,
+    RunRemaining,
+    Cancel,
+    Help,
+    Invalid,
+}
+
+pub fn parse_step_choice(input: &str) -> StepChoice {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "" | "c" | "continue" => StepChoice::Continue,
+        "a" | "all" => StepChoice::RunRemaining,
+        "q" | "quit" | "cancel" => StepChoice::Cancel,
+        "h" | "help" | "?" => StepChoice::Help,
+        _ => StepChoice::Invalid,
+    }
+}
+
+#[derive(Debug)]
+pub struct StepController {
+    requested: bool,
+    interactive: bool,
+    run_remaining: bool,
+    current: usize,
+    total: usize,
+}
+
+impl StepController {
+    pub fn new(requested: bool, interactive: bool) -> Self {
+        Self {
+            requested,
+            interactive,
+            run_remaining: false,
+            current: 0,
+            total: 0,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.requested && self.interactive
+    }
+
+    pub fn requested_without_terminal(&self) -> bool {
+        self.requested && !self.interactive
+    }
+
+    pub fn begin_round(&mut self, total: usize) {
+        self.run_remaining = false;
+        self.current = 0;
+        self.total = total;
+    }
+
+    pub fn next_position(&mut self) -> (usize, usize) {
+        self.current = (self.current + 1).min(self.total);
+        (self.current, self.total)
+    }
+
+    pub fn should_prompt(&self) -> bool {
+        self.is_active() && !self.run_remaining
+    }
+
+    pub fn run_remaining(&mut self) {
+        self.run_remaining = true;
+    }
+}

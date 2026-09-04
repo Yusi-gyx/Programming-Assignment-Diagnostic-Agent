@@ -72,6 +72,53 @@ impl ModelConfig {
             output_price,
         }
     }
+
+    /// 返回可直接调用的 OpenAI 兼容 Chat Completions 地址。
+    ///
+    /// 配置向导允许用户填写服务根地址（如 Ollama 的
+    /// `http://localhost:11434`）或 API 根地址（如 `.../v1`）。这里在
+    /// 运行时补全标准路径，同时保留已经填写完整路径的配置。
+    pub fn chat_endpoint(&self) -> String {
+        normalize_chat_endpoint(&self.endpoint)
+    }
+
+    /// 当前 endpoint 是否指向 Ollama 的默认服务端口。
+    ///
+    /// 旧配置没有 provider 字段，因此通过 Ollama 的默认端口保持向后兼容。
+    pub fn is_ollama(&self) -> bool {
+        let endpoint = self.endpoint.trim().to_ascii_lowercase();
+        let authority = endpoint
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(&endpoint)
+            .split('/')
+            .next()
+            .unwrap_or_default();
+        authority
+            .rsplit_once(':')
+            .is_some_and(|(_, port)| port == "11434")
+    }
+}
+
+/// 将服务根地址或 `/v1` API 根地址补全为 Chat Completions endpoint。
+pub fn normalize_chat_endpoint(endpoint: &str) -> String {
+    let endpoint = endpoint.trim().trim_end_matches('/');
+    if endpoint.ends_with("/chat/completions") {
+        return endpoint.to_owned();
+    }
+    if endpoint.ends_with("/v1") {
+        return format!("{endpoint}/chat/completions");
+    }
+
+    let has_path = endpoint
+        .split_once("://")
+        .map(|(_, rest)| rest.contains('/'))
+        .unwrap_or_else(|| endpoint.contains('/'));
+    if !has_path {
+        format!("{endpoint}/v1/chat/completions")
+    } else {
+        endpoint.to_owned()
+    }
 }
 
 // ============================================================
@@ -146,6 +193,13 @@ impl Config {
     pub fn save(&self, path: &Path) -> Result<()> {
         let content = toml::to_string_pretty(self)
             .map_err(|e| PadaError::Config(format!("序列化配置失败: {}", e)))?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| PadaError::Config(format!("创建配置目录失败: {e}")))?;
+        }
         std::fs::write(path, content)
             .map_err(|e| PadaError::Config(format!("写入配置文件失败: {}", e)))?;
         Ok(())
