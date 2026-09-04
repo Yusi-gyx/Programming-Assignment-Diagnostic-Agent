@@ -223,6 +223,16 @@ fn test_session_save_load_roundtrip() {
 }
 
 #[test]
+fn test_old_session_without_resume_context_still_loads() {
+    let session = Session::new("旧会话");
+    let mut value = serde_json::to_value(&session).unwrap();
+    value.as_object_mut().unwrap().remove("context");
+    let loaded: Session = serde_json::from_value(value).unwrap();
+    assert!(loaded.context.is_none());
+    assert_eq!(loaded.title, "旧会话");
+}
+
+#[test]
 fn test_session_load_nonexistent() {
     let result = Session::load(std::path::Path::new("/nonexistent/session.json"));
     assert!(result.is_err());

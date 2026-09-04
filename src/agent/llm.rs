@@ -36,6 +36,11 @@
 
 use crate::config::model::ModelConfig;
 use crate::error::{PadaError, Result};
+use crate::{
+    analysis::error_parser::RustcDiagnostic,
+    analysis::hint::{error_category_text, format_location, knowledge_point_text},
+    models::{Assignment, Diagnostic, TestResult},
+};
 use serde::{Deserialize, Serialize};
 
 // ============================================================
@@ -77,6 +82,68 @@ impl ChatMessage {
             content: content.into(),
         }
     }
+}
+
+/// 构造 Level 5 编译错误参考方案请求。提示模型保留教学过程，而不是只给完整答案。
+pub fn compile_solution_messages(
+    assignment: &Assignment,
+    source_context: &str,
+    diag: &RustcDiagnostic,
+    classified: &Diagnostic,
+    profile_summary: &str,
+) -> Vec<ChatMessage> {
+    let points = classified
+        .knowledge_points
+        .iter()
+        .map(|point| knowledge_point_text(*point))
+        .collect::<Vec<_>>()
+        .join("、");
+    vec![
+        ChatMessage::system(format!(
+            "你是 Rust 编程导师。用户已经主动请求最高等级（Level 5）提示。请给出可操作的参考方案，解释关键修改，并尽量只展示与错误相关的最小代码片段。不要编造未提供的信息。\n{profile_summary}"
+        )),
+        ChatMessage::user(format!(
+            "题目：{}\n题目描述：\n{}\n\n提交内容：\n```rust\n{}\n```\n\n错误类别：{}\n错误位置：{}\n错误码：{}\n错误消息：{}\n相关知识点：{}",
+            assignment.title,
+            assignment.description,
+            source_context,
+            error_category_text(classified.category),
+            diag.location
+                .as_ref()
+                .map(format_location)
+                .unwrap_or_else(|| "未知".into()),
+            diag.code.as_deref().unwrap_or("无"),
+            diag.message,
+            if points.is_empty() {
+                "待分析"
+            } else {
+                &points
+            },
+        )),
+    ]
+}
+
+/// 构造 Level 5 测试失败参考方案请求。
+pub fn test_solution_messages(
+    assignment: &Assignment,
+    source_context: &str,
+    result: &TestResult,
+    profile_summary: &str,
+) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::system(format!(
+            "你是 Rust 编程导师。用户已经主动请求最高等级（Level 5）提示。请依据失败用例给出可操作的参考方案，解释关键修改，并避免无关的完整重写。\n{profile_summary}"
+        )),
+        ChatMessage::user(format!(
+            "题目：{}\n题目描述：\n{}\n\n提交内容：\n```rust\n{}\n```\n\n失败用例：{}\n期望输出：{}\n实际输出：{}",
+            assignment.title,
+            assignment.description,
+            source_context,
+            result.name,
+            result.expected_output.trim(),
+            result.actual_output.trim(),
+        )),
+    ]
 }
 
 // ============================================================

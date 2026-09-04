@@ -109,8 +109,11 @@ Agent 必须管理多轮对话与任务状态的完整历史记录。用户能�
 * 查看单次会话的完整工作流程，即 Agent 实际的思考、工具调用与中间结果轨迹，而不是把 Agent 当作黑盒（可参考 DeepSeek Harness 的轨迹展示）
 * 将某次会话的完整上下文保存为文件（如 JSON）
 * 从文件加载历史上下文，继续工作或复盘
+* 自动保存每次诊断会话，并通过 `resume` 列出和继续最近会话
 
 轨迹应至少记录：每一步的输入、调用的工具与参数、工具输出、Agent 决策依据，以便用户与开发者审计和回放。
+
+自动续聊记录与用户手动导出的会话分开存储；自动记录最多保留最近 20 条，超出后删除最旧记录。会话保存恢复诊断所需的题目、提交、测试、模型 profile 与提示等级等上下文。
 
 ### 3.4 Token 用量与价格统计（R6）
 
@@ -208,6 +211,7 @@ struct Mastery {
     confidence: f32,     // 置信度，随样本量上升
     last_seen: DateTime, // 最近一次练习时间，用于遗忘衰减
     history: Vec<MasteryEvent>,
+    last_diagnostic_key: Option<String>, // 最近一次提交内容/诊断指纹，防止重复记分
 }
 
 enum MasteryEvent {
@@ -248,6 +252,8 @@ effective_mastery = score * exp(-Δt / τ)
 * 每次诊断结束：以错误分类 + 测试结果作为证据写入
 * 用户显式反馈：「我懂了 / 还不会」
 * 重复错误检测：同知识点反复出错时降低掌握度并提升置信度
+
+同一份未修改提交产生的相同自动诊断只记为一次证据，避免关闭后重新打开会话时重复扣分；提交内容变化后才视为新的练习证据。距上次练习时间按秒、分钟、小时或天显示，而不是只取整到天。
 
 #### 4.4.4 记忆读取与注入
 
@@ -312,6 +318,10 @@ pada diagnose --problem problem.md --code main.rs --budget 20000
 
 # 导出诊断报告为 Markdown
 pada diagnose --problem problem.md --code main.rs --report report.md
+
+# 列出最近自动保存的会话并选择继续
+pada resume
+pada resume 1
 ```
 
 启动参数：
@@ -328,6 +338,8 @@ pada diagnose --problem problem.md --code main.rs --report report.md
 | `--history <file>` | 加载历史会话上下文（R5） |
 | `--report <file>` | 导出 Markdown 诊断报告 |
 
+全局 `--data-dir <dir>` 可覆盖默认的 `~/.pada` 数据根目录，也可使用 `PADA_HOME` 环境变量。
+
 交互式命令（会话内）：
 
 | 命令 | 说明 |
@@ -341,6 +353,10 @@ pada diagnose --problem problem.md --code main.rs --report report.md
 | `\new` | 新建对话，清除上下文 |
 | `\help` | 显示帮助 |
 | `\exit` | 退出 |
+
+所有诊断会话自动保存到 `sessions/auto/`，供顶层 `resume` 命令使用；`save`/`--save` 是独立的手动导出操作，保存到 `sessions/exported/`。Markdown 报告统一保存到 `reports/`，学习画像默认保存到 `learning/profile.json`。每次保存后 CLI 输出完整路径。
+
+真实终端采用语义颜色：错误类型红色、知识点黄色、提示蓝色、成功结果绿色；非终端输出或设置 `NO_COLOR` 时保持纯文本。
 
 为降低命令记忆成本，命令前的反斜杠可省略。真实终端默认进入导师模式；
 `--no-interactive` 可用于 CI / 脚本，`--step` 会在编译、测试生成与分析阶段等待确认。
@@ -545,6 +561,7 @@ PADA/
 │   ├── memory/          # 学习进度记忆化（掌握度 / 遗忘衰减 / 画像注入）
 │   ├── config/          # R3 模型配置（endpoint / key / 价格 / profile）
 │   ├── history/         # R5 会话与轨迹持久化
+│   ├── storage.rs       # 报告、自动/手动会话、学习画像的统一目录
 │   ├── telemetry/       # R6 token 用量与成本统计、预算控制
 │   └── ...
 │

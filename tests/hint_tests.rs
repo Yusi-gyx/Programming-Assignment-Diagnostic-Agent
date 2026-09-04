@@ -233,7 +233,10 @@ fn test_compile_hint_solution() {
     let hint = generate_compile_hint(&diag, &classified, HintLevel::Solution);
 
     assert_eq!(hint.level, HintLevel::Solution);
-    assert!(!hint.content.is_empty(), "Level 5 应有占位提示");
+    assert!(
+        hint.content.contains("--config"),
+        "未配置模型时应说明配置方式"
+    );
 }
 
 // ============================================================
@@ -284,7 +287,10 @@ fn test_test_hint_direction() {
 fn test_test_hint_solution() {
     let hint = generate_test_hint("case_1", "9", "6", HintLevel::Solution);
     assert_eq!(hint.level, HintLevel::Solution);
-    assert!(!hint.content.is_empty(), "Level 5 应有占位提示");
+    assert!(
+        hint.content.contains("--config"),
+        "未配置模型时应说明配置方式"
+    );
 }
 
 // ============================================================

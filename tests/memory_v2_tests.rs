@@ -1,4 +1,4 @@
-use pada::memory::{DEFAULT_DECAY_SECS, KnowledgeProfile, Mastery, MasteryEvent};
+use pada::memory::{DEFAULT_DECAY_SECS, KnowledgeProfile, Mastery, MasteryEvent, elapsed_text};
 use pada::models::KnowledgePoint;
 
 #[test]
@@ -37,4 +37,45 @@ fn summary_has_bar() {
     p.record_feedback(KnowledgePoint::Iterator, false, 1);
     let s = p.summary_at(1);
     assert!(s.contains("[#####---------------]") && s.contains("薄弱点"));
+}
+
+#[test]
+fn reopening_same_submission_does_not_reduce_mastery() {
+    let mut profile = KnowledgeProfile::default();
+    assert!(profile.record_diagnostic_once(
+        KnowledgePoint::Ownership,
+        false,
+        "same-source:E0382",
+        100,
+    ));
+    profile.record_feedback(KnowledgePoint::Ownership, true, 101);
+    let score_after_feedback = profile.mastery[&KnowledgePoint::Ownership].score;
+
+    assert!(!profile.record_diagnostic_once(
+        KnowledgePoint::Ownership,
+        false,
+        "same-source:E0382",
+        102,
+    ));
+    assert_eq!(
+        profile.mastery[&KnowledgePoint::Ownership].score,
+        score_after_feedback
+    );
+
+    assert!(profile.record_diagnostic_once(
+        KnowledgePoint::Ownership,
+        false,
+        "changed-source:E0382",
+        103,
+    ));
+    assert!(profile.mastery[&KnowledgePoint::Ownership].score < score_after_feedback);
+}
+
+#[test]
+fn elapsed_time_uses_useful_granularity() {
+    assert_eq!(elapsed_text(100, 100), "刚刚");
+    assert_eq!(elapsed_text(100, 142), "42 秒前");
+    assert_eq!(elapsed_text(100, 220), "2 分钟前");
+    assert_eq!(elapsed_text(100, 7_300), "2 小时前");
+    assert_eq!(elapsed_text(100, 172_900), "2 天前");
 }

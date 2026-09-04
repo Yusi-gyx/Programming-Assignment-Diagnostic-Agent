@@ -8,7 +8,7 @@
 //! - 提示级别控制是确定性逻辑，由 Rust 完成
 //! - Level 1-3（类别 / 位置 / 知识点）完全由程序从诊断数据中提取
 //! - Level 4（修改方向）由程序基于错误码给出通用方向
-//! - Level 5（参考方案）需 LLM 生成参考代码（第 9 步接入）
+//! - Level 5（参考方案）在上层配置模型后由 LLM 生成；未配置时给出配置指引
 //!
 //! # 提示级别（DESIGN.md §4.3）
 //!
@@ -132,7 +132,7 @@ pub fn format_location(loc: &SourceLocation) -> String {
 /// - **Location (2)**：来自 `diag.location`（如「位置：file:line:col」）
 /// - **Concept (3)**：来自 `classified.knowledge_points`（如「知识点：所有权 / Move」）
 /// - **Direction (4)**：来自 [`code_to_direction`] 基于错误码的通用方向
-/// - **Solution (5)**：需 LLM 生成参考代码（第 9 步接入）
+/// - **Solution (5)**：先返回模型配置指引，上层配置模型时替换为实际生成内容
 pub fn generate_compile_hint(
     diag: &RustcDiagnostic,
     classified: &Diagnostic,
@@ -169,8 +169,7 @@ pub fn generate_compile_hint(
     //       None => Hint::new(level, "修改方向待分析（无错误码）".to_string()),
     //   }
     //
-    // HintLevel::Solution =>
-    //   Hint::new(level, "参考方案需 LLM 生成（第 9 步接入）".to_string())
+    // HintLevel::Solution => 返回模型配置指引；配置模型后由 SolutionHintService 替换
     match &level {
         HintLevel::Category => Hint::new(
             level,
@@ -199,7 +198,10 @@ pub fn generate_compile_hint(
             },
             None => Hint::new(level, "修改方向待分析（无错误码）".to_string()),
         },
-        HintLevel::Solution => Hint::new(level, "参考方案需要LLM生成".to_string()),
+        HintLevel::Solution => Hint::new(
+            level,
+            "尚未配置 LLM，无法生成参考方案。请使用 --config <config.toml>（可配合 --profile）配置模型。",
+        ),
     }
 }
 
@@ -214,7 +216,7 @@ pub fn generate_compile_hint(
 /// - **Location (2)**：失败的测试用例名称
 /// - **Concept (3)**：知识点无法从输出确定性判断，提示「待分析」
 /// - **Direction (4)**：描述输入 / 期望 / 实际的对照
-/// - **Solution (5)**：需 LLM 生成参考代码
+/// - **Solution (5)**：先返回模型配置指引，上层配置模型时替换为实际生成内容
 pub fn generate_test_hint(name: &str, actual: &str, expected: &str, level: HintLevel) -> Hint {
     // TODO: 实现测试失败分层提示
     //
@@ -233,8 +235,7 @@ pub fn generate_test_hint(name: &str, actual: &str, expected: &str, level: HintL
     //   Hint::new(level,
     //     format!("输入对应期望输出为「{}」，但实际输出「{}」", expected.trim(), actual.trim()))
     //
-    // HintLevel::Solution =>
-    //   Hint::new(level, "参考方案需 LLM 生成（第 9 步接入）")
+    // HintLevel::Solution => 返回模型配置指引；配置模型后由 SolutionHintService 替换
     match &level {
         HintLevel::Category => Hint::new(level, "这是一个逻辑错误（测试未通过）".to_string()),
         HintLevel::Location => Hint::new(level, format!("失败的测试用例： {}", name)),
@@ -247,7 +248,10 @@ pub fn generate_test_hint(name: &str, actual: &str, expected: &str, level: HintL
                 actual.trim()
             ),
         ),
-        HintLevel::Solution => Hint::new(level, "参考方案需LLM生成".to_string()),
+        HintLevel::Solution => Hint::new(
+            level,
+            "尚未配置 LLM，无法生成参考方案。请使用 --config <config.toml>（可配合 --profile）配置模型。",
+        ),
     }
 }
 

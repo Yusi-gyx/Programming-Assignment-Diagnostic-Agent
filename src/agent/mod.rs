@@ -11,3 +11,4 @@
 pub mod interaction;
 pub mod llm;
 pub mod progress;
+pub mod solution;

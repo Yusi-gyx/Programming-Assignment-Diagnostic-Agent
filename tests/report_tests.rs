@@ -319,3 +319,21 @@ fn test_hint_level_reflected_in_report() {
     // 两份报告的提示内容不同
     assert_ne!(text1, text3);
 }
+
+#[test]
+fn colored_report_marks_errors_knowledge_and_hints() {
+    let diag = make_diag(Some("E0382"), Some(make_loc()));
+    let classified = make_classified(vec![KnowledgePoint::Ownership]);
+    let hint = generate_compile_hint(&diag, &classified, HintLevel::Concept);
+    let mut report = DiagnosticReport::new();
+    report.add_compile(CompileReportEntry {
+        diag,
+        classified,
+        hint,
+    });
+
+    let colored = report.to_colored_text();
+    assert!(colored.contains("\x1b[31;1m[编译错误]"));
+    assert!(colored.contains("\x1b[33m  知识点"));
+    assert!(colored.contains("\x1b[34;1m  提示"));
+}

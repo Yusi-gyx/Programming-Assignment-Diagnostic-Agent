@@ -7,8 +7,12 @@
 //! cargo test --test llm_tests
 //! ```
 
-use pada::agent::llm::{ChatMessage, LlmClient, LlmResponse};
+use pada::agent::llm::{
+    ChatMessage, LlmClient, LlmResponse, compile_solution_messages, test_solution_messages,
+};
+use pada::analysis::error_parser::{RustcDiagnostic, Severity};
 use pada::config::model::ModelConfig;
+use pada::models::{Assignment, Diagnostic, ErrorCategory, KnowledgePoint, TestResult};
 use serde_json::json;
 
 // ============================================================
@@ -226,4 +230,45 @@ fn test_llm_response_eq() {
         model: "m".into(),
     };
     assert_eq!(r1, r2);
+}
+
+#[test]
+fn level_five_prompts_include_real_diagnostic_context() {
+    let assignment = Assignment {
+        title: "移动值".into(),
+        description: "修复所有权错误".into(),
+    };
+    let diagnostic = RustcDiagnostic {
+        severity: Severity::Error,
+        code: Some("E0382".into()),
+        message: "borrow of moved value".into(),
+        location: None,
+        notes: vec![],
+    };
+    let classified = Diagnostic {
+        category: ErrorCategory::CompileError,
+        knowledge_points: vec![KnowledgePoint::Ownership],
+        confidence: 0.95,
+    };
+    let messages = compile_solution_messages(
+        &assignment,
+        "fn main() {}",
+        &diagnostic,
+        &classified,
+        "学习画像：暂无",
+    );
+    assert_eq!(messages.len(), 2);
+    assert!(messages[1].content.contains("E0382"));
+    assert!(messages[1].content.contains("fn main()"));
+    assert!(messages[0].content.contains("Level 5"));
+
+    let failed = TestResult {
+        name: "empty".into(),
+        passed: false,
+        actual_output: "1".into(),
+        expected_output: "0".into(),
+    };
+    let messages = test_solution_messages(&assignment, "fn main() {}", &failed, "画像");
+    assert!(messages[1].content.contains("empty"));
+    assert!(messages[1].content.contains("期望输出：0"));
 }

@@ -109,6 +109,16 @@ impl DiagnosticReport {
         out
     }
 
+    /// 面向真实终端的彩色文本。重定向到文件时应继续使用 [`Self::to_text`]。
+    pub fn to_colored_text(&self) -> String {
+        self.to_text()
+            .lines()
+            .map(colorize_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
     /// 格式化为 Markdown（供 `--report report.md` 导出）。
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
@@ -138,6 +148,29 @@ impl DiagnosticReport {
 
         out
     }
+}
+
+fn colorize_line(line: &str) -> String {
+    const RED: &str = "\x1b[31;1m";
+    const GREEN: &str = "\x1b[32;1m";
+    const YELLOW: &str = "\x1b[33m";
+    const BLUE: &str = "\x1b[34;1m";
+    const RESET: &str = "\x1b[0m";
+
+    let color = if line.starts_with('[') {
+        Some(RED)
+    } else if line.trim_start().starts_with("知识点") {
+        Some(YELLOW)
+    } else if line.trim_start().starts_with("提示") {
+        Some(BLUE)
+    } else if line.starts_with("未发现问题") {
+        Some(GREEN)
+    } else {
+        None
+    };
+    color
+        .map(|value| format!("{value}{line}{RESET}"))
+        .unwrap_or_else(|| line.to_owned())
 }
 
 // ============================================================

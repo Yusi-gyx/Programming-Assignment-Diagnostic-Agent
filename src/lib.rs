@@ -24,4 +24,5 @@ pub mod analysis;
 pub mod config;
 pub mod history;
 pub mod memory;
+pub mod storage;
 pub mod telemetry;

@@ -22,7 +22,7 @@
 use crate::agent::llm::{ChatMessage, LlmResponse};
 use crate::telemetry::UsageRecord;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ============================================================
@@ -132,6 +132,24 @@ pub struct Session {
     pub steps: Vec<SessionStep>,
     /// 会话内的 token 用量记录
     pub usage_records: Vec<UsageRecord>,
+    /// 恢复会话所需的启动上下文。旧版会话没有此字段时仍可加载和回放。
+    #[serde(default)]
+    pub context: Option<SessionContext>,
+}
+
+/// `resume` 重建诊断命令所需的信息。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionContext {
+    pub problem: PathBuf,
+    pub code: Option<PathBuf>,
+    pub project: Option<PathBuf>,
+    pub tests: Option<PathBuf>,
+    pub config: Option<PathBuf>,
+    pub profile: Option<String>,
+    pub memory: Option<PathBuf>,
+    pub hint: u8,
+    pub budget: Option<usize>,
+    pub generate_tests: bool,
 }
 
 impl Session {
@@ -139,13 +157,19 @@ impl Session {
     pub fn new(title: impl Into<String>) -> Self {
         let ts = now_ts();
         Self {
-            id: format!("session_{}", ts),
+            id: format!("session_{}", now_id()),
             title: title.into(),
             created_at: ts,
             updated_at: ts,
             steps: Vec::new(),
             usage_records: Vec::new(),
+            context: None,
         }
+    }
+
+    pub fn set_context(&mut self, context: SessionContext) {
+        self.context = Some(context);
+        self.updated_at = now_ts();
     }
 
     /// 添加一个步骤并更新时间戳。
@@ -266,5 +290,12 @@ fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_id() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
         .unwrap_or(0)
 }

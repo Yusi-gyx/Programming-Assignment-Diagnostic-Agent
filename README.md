@@ -13,7 +13,8 @@ PADA 是一个面向编程学习的命令行工具。它不会一上来就替你
 - 提供五级提示，从错误类别逐步深入到修改方向和参考方案
 - 在同一个会话中修改代码、重新检查并继续获得指导
 - 运行自定义测试，也可调用大模型生成边界测试
-- 导出 Markdown 诊断报告，保存和继续历史会话
+- 彩色标注错误、知识点与提示（输出重定向时自动关闭颜色）
+- 集中导出 Markdown 报告，自动保存并恢复最近的历史会话
 - 记录 Token 用量与成本，并通过预算避免超额调用
 - 保存学习画像，显示掌握度、遗忘衰减和薄弱知识点
 
@@ -89,7 +90,7 @@ pada[3]> recheck
 | `understood` | 记录“已经理解” |
 | `notyet` | 记录“还没理解” |
 | `usage` | 查看 Token 用量与成本 |
-| `save <文件>` | 保存当前会话 |
+| `save <文件名>` | 手动导出当前会话到统一目录 |
 | `help` | 查看命令帮助 |
 | `exit` | 退出 |
 
@@ -166,21 +167,33 @@ pada diagnose --problem problem.md --code main.rs \
   --save session.json
 ```
 
-之后可以加载原会话继续诊断：
+报告和手动导出的会话不会散落在当前目录，而是分别保存到：
+
+```text
+~/.pada/reports/
+~/.pada/sessions/exported/
+```
+
+每次诊断还会自动保存续聊记录（最多 20 条）到 `~/.pada/sessions/auto/`。列出最近记录并选择继续：
+
+```bash
+pada resume
+# 也可以直接选择列表序号
+pada resume 1
+```
+
+`resume` 使用的是自动记录，与 `save` 的手动导出互不混淆。仍可加载旧版或外部会话文件：
 
 ```bash
 pada diagnose --problem problem.md --code main.rs \
   --history session.json
 ```
 
-### 保存学习画像
+### 学习画像
 
-```bash
-pada diagnose --problem problem.md --code main.rs \
-  --memory learning.json
-```
+学习画像用于记录“在哪些知识点上练习过、掌握度如何、距离上次练习多久”，并根据诊断结果与 `understood` / `notyet` 反馈更新。默认自动保存在 `~/.pada/learning/profile.json`，无需额外参数；在导师模式输入 `progress` 即可查看。
 
-PADA 会根据诊断结果和 `understood` / `notyet` 反馈更新掌握度。再次使用相同的画像文件，就能延续学习记录。
+如果需要使用独立画像，可传入 `--memory <文件>`。同一份未修改提交被重新打开时不会重复计为失败证据；提交内容发生变化后才会记录新的诊断证据。
 
 ## 使用大模型生成边界测试
 
@@ -211,6 +224,18 @@ pada diagnose --problem problem.md --code main.rs \
 
 `--budget` 是本次会话的 Token 上限。达到预算后，PADA 会阻止后续模型调用。
 
+Level 5 会在配置模型后实际生成参考方案；没有 `--config` 时会明确提示如何配置，不再显示占位文本。
+
+## 数据目录与颜色
+
+PADA 的默认数据根目录是 `~/.pada`。可以用全局参数 `--data-dir <目录>` 或环境变量 `PADA_HOME` 覆盖，例如：
+
+```bash
+pada --data-dir ./pada-data diagnose --problem problem.md --code main.rs
+```
+
+真实终端中，错误类型显示为红色、知识点为黄色、提示为蓝色、成功结果为绿色。设置 `NO_COLOR=1` 或把输出重定向到文件时，不输出 ANSI 颜色码。
+
 ## 主要参数
 
 | 参数 | 说明 |
@@ -224,10 +249,10 @@ pada diagnose --problem problem.md --code main.rs \
 | `--config <文件>` | 模型配置文件 |
 | `--profile <名称>` | 使用指定模型配置 |
 | `--budget <数量>` | 会话 Token 预算 |
-| `--report <文件>` | 导出 Markdown 报告 |
-| `--save <文件>` | 保存会话 |
+| `--report <文件名>` | 导出 Markdown 报告到统一报告目录 |
+| `--save <文件名>` | 手动导出会话到统一会话目录 |
 | `--history <文件>` | 加载历史会话 |
-| `--memory <文件>` | 加载并保存学习画像 |
+| `--memory <文件>` | 使用自定义学习画像文件（默认自动使用统一画像） |
 | `--step` | 逐阶段确认执行 |
 | `--no-interactive` | 诊断一次后退出 |
 
@@ -235,6 +260,7 @@ pada diagnose --problem problem.md --code main.rs \
 
 ```bash
 pada diagnose --help
+pada resume --help
 ```
 
 ## 开发与测试
