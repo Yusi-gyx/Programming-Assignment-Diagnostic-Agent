@@ -9,12 +9,14 @@
 
 use pada::agent::llm::{
     ChatMessage, LlmClient, LlmResponse, compile_hint_messages, compile_solution_messages,
-    test_hint_messages, test_solution_messages,
+    parse_stream_response, test_hint_messages, test_solution_messages,
 };
 use pada::analysis::error_parser::{RustcDiagnostic, Severity};
 use pada::config::model::ModelConfig;
 use pada::models::{Assignment, Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult};
 use serde_json::json;
+use std::io::Cursor;
+use std::sync::atomic::AtomicBool;
 
 // ============================================================
 // ChatMessage 测试
@@ -190,6 +192,32 @@ fn test_parse_response_usage_partial() {
     let resp = LlmClient::parse_response(&json).unwrap();
     assert_eq!(resp.input_tokens, 50);
     assert_eq!(resp.output_tokens, 0, "缺失的 completion_tokens 应为 0");
+}
+
+#[test]
+fn test_parse_stream_response_combines_chunks_and_usage() {
+    let stream = concat!(
+        "data: {\"model\":\"local-model\",\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let cancelled = AtomicBool::new(false);
+
+    let response = parse_stream_response(Cursor::new(stream), &cancelled).unwrap();
+
+    assert_eq!(response.content, "你好");
+    assert_eq!(response.model, "local-model");
+    assert_eq!(response.input_tokens, 12);
+    assert_eq!(response.output_tokens, 2);
+}
+
+#[test]
+fn test_parse_stream_response_honors_preexisting_cancellation() {
+    let cancelled = AtomicBool::new(true);
+    let result = parse_stream_response(Cursor::new("data: [DONE]\n"), &cancelled);
+
+    assert!(result.is_err());
 }
 
 // ============================================================

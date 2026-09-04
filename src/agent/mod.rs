@@ -11,6 +11,7 @@
 pub mod export;
 pub mod interaction;
 pub mod llm;
+pub mod model_task;
 pub mod progress;
 pub mod solution;
 pub mod test_analysis;

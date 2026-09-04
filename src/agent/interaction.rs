@@ -12,6 +12,8 @@ pub enum InteractiveCommand {
     Progress,
     Feedback(bool),
     Config,
+    Tests(Option<String>),
+    Case,
     Save(Option<String>),
     Help,
     Exit,
@@ -30,6 +32,10 @@ pub fn parse_command(input: &str) -> InteractiveCommand {
         "understood" | "懂了" => InteractiveCommand::Feedback(true),
         "notyet" | "还不会" => InteractiveCommand::Feedback(false),
         "\\config" | "config" => InteractiveCommand::Config,
+        "\\test" | "\\tests" | "test" | "tests" => {
+            InteractiveCommand::Tests(parts.next().map(str::to_owned))
+        }
+        "\\case" | "case" => InteractiveCommand::Case,
         "\\save" | "save" => InteractiveCommand::Save(parts.next().map(str::to_owned)),
         "\\help" | "help" | "?" => InteractiveCommand::Help,
         "\\exit" | "exit" | "quit" => InteractiveCommand::Exit,
@@ -48,5 +54,5 @@ pub fn hint_number(level: HintLevel) -> u8 {
 }
 
 pub fn help_text() -> &'static str {
-    "命令: next  hint [1-5]  recheck  show  progress  understood/notyet  usage  config  save [文件]  help  exit"
+    "命令: next  hint [1-5]  recheck  show  test <文件>  case  progress  understood/notyet  usage  config  save [文件]  help  exit"
 }

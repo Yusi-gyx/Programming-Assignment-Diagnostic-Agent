@@ -1,6 +1,7 @@
 //! Level 3-5 模型增强提示生成、格式清理与会话记录。
 
 use crate::agent::llm::{ChatModel, LlmClient, compile_hint_messages, test_hint_messages};
+use crate::agent::model_task::{ModelTaskOutcome, run_model_task};
 use crate::analysis::hint::Hint;
 use crate::config::model::ModelConfig;
 use crate::history::{AgentDecision, LlmExchange, Session, StepBuilder};
@@ -9,10 +10,11 @@ use crate::models::{Assignment, HintLevel};
 use crate::report::DiagnosticReport;
 use crate::telemetry::{UsageRecord, UsageTracker};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct SolutionHintService {
     config: Option<ModelConfig>,
-    model: Option<Box<dyn ChatModel>>,
+    model: Option<Arc<dyn ChatModel>>,
     cache: HashMap<String, String>,
 }
 
@@ -20,7 +22,7 @@ impl SolutionHintService {
     pub fn new(config: Option<ModelConfig>) -> Self {
         let model = config
             .as_ref()
-            .map(|config| Box::new(LlmClient::new(config.clone())) as Box<dyn ChatModel>);
+            .map(|config| Arc::new(LlmClient::new(config.clone())) as Arc<dyn ChatModel>);
         Self {
             config,
             model,
@@ -32,11 +34,12 @@ impl SolutionHintService {
     pub fn with_model(config: ModelConfig, model: Box<dyn ChatModel>) -> Self {
         Self {
             config: Some(config),
-            model: Some(model),
+            model: Some(Arc::from(model)),
             cache: HashMap::new(),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn enrich(
         &mut self,
         report: &mut DiagnosticReport,
@@ -45,6 +48,7 @@ impl SolutionHintService {
         knowledge: &KnowledgeProfile,
         tracker: &mut UsageTracker,
         session: &mut Session,
+        interactive: bool,
     ) {
         let needs_model_hint = report
             .compile_entries
@@ -105,9 +109,9 @@ impl SolutionHintService {
                 &entry.hint.content,
                 &profile_summary,
             );
-            model_call_started(level, current, total);
-            match model.chat(&messages) {
-                Ok(response) => {
+            model_call_started(level, current, total, interactive);
+            match run_model_task(Arc::clone(model), &messages, interactive) {
+                ModelTaskOutcome::Completed(Ok(response)) => {
                     record_exchange(
                         session,
                         tracker,
@@ -122,11 +126,18 @@ impl SolutionHintService {
                     entry.hint = Hint::new(level, content);
                     model_call_finished(current, total);
                 }
-                Err(error) => {
+                ModelTaskOutcome::Completed(Err(error)) => {
                     model_call_failed(current, total, &error);
                     if level == HintLevel::Solution {
                         entry.hint = failed_hint(error);
                     }
+                }
+                ModelTaskOutcome::Cancelled => {
+                    model_call_cancelled(current, total);
+                    if level == HintLevel::Solution {
+                        entry.hint = cancelled_hint();
+                    }
+                    return;
                 }
             }
         }
@@ -163,9 +174,9 @@ impl SolutionHintService {
                 &entry.hint.content,
                 &profile_summary,
             );
-            model_call_started(level, current, total);
-            match model.chat(&messages) {
-                Ok(response) => {
+            model_call_started(level, current, total, interactive);
+            match run_model_task(Arc::clone(model), &messages, interactive) {
+                ModelTaskOutcome::Completed(Ok(response)) => {
                     record_exchange(
                         session,
                         tracker,
@@ -180,11 +191,18 @@ impl SolutionHintService {
                     entry.hint = Hint::new(level, content);
                     model_call_finished(current, total);
                 }
-                Err(error) => {
+                ModelTaskOutcome::Completed(Err(error)) => {
                     model_call_failed(current, total, &error);
                     if level == HintLevel::Solution {
                         entry.hint = failed_hint(error);
                     }
+                }
+                ModelTaskOutcome::Cancelled => {
+                    model_call_cancelled(current, total);
+                    if level == HintLevel::Solution {
+                        entry.hint = cancelled_hint();
+                    }
+                    return;
                 }
             }
         }
@@ -235,11 +253,14 @@ fn hint_level_number(level: HintLevel) -> u8 {
     }
 }
 
-fn model_call_started(level: HintLevel, current: usize, total: usize) {
+fn model_call_started(level: HintLevel, current: usize, total: usize, interactive: bool) {
     eprintln!(
         "⏳ 正在调用模型生成 Level {} 提示（{current}/{total}），请稍候…",
         hint_level_number(level)
     );
+    if interactive {
+        eprintln!("   输入 q 或 cancel 并回车，可停止本次模型生成。");
+    }
 }
 
 fn model_call_finished(current: usize, total: usize) {
@@ -248,6 +269,10 @@ fn model_call_finished(current: usize, total: usize) {
 
 fn model_call_failed(current: usize, total: usize, error: &crate::error::PadaError) {
     eprintln!("⚠ 模型提示生成失败（{current}/{total}）：{error}");
+}
+
+fn model_call_cancelled(current: usize, total: usize) {
+    eprintln!("■ 已取消模型提示生成（{current}/{total}）");
 }
 
 /// 清理本地推理模型常见的思维链标签和多余 Markdown 外层，使终端输出稳定可读。
@@ -309,6 +334,13 @@ fn budget_hint() -> Hint {
     Hint::new(
         HintLevel::Solution,
         "Token 预算已用尽，未调用 LLM。请提高 --budget 后重试。",
+    )
+}
+
+fn cancelled_hint() -> Hint {
+    Hint::new(
+        HintLevel::Solution,
+        "模型提示生成已取消。可以再次使用 show 或 hint 5 重试。",
     )
 }
 

@@ -2,6 +2,8 @@
 use clap::{ArgGroup, Parser, Subcommand};
 use pada::agent::export::{available_export_target, choose_export_target};
 use pada::agent::interaction::{InteractiveCommand, help_text, parse_command};
+use pada::agent::llm::LlmClient;
+use pada::agent::model_task::{ModelTaskOutcome, run_model_task};
 use pada::agent::progress::{
     CliProgress, ProgressReporter, SilentProgress, StepChoice, StepController, parse_step_choice,
 };
@@ -14,7 +16,7 @@ use pada::analysis::hint::{
     hint_level_from_number, next_hint_level,
 };
 use pada::config::wizard::WizardResult;
-use pada::history::{AgentDecision, Session, SessionContext, StepBuilder, ToolCall};
+use pada::history::{AgentDecision, LlmExchange, Session, SessionContext, StepBuilder, ToolCall};
 use pada::models::{Assignment, Diagnostic, HintLevel};
 use pada::report::{CompileReportEntry, DiagnosticReport, TestReportEntry};
 use pada::storage::{DataStore, StoredSession};
@@ -23,6 +25,7 @@ use pada::tools::compiler::{CompileOutput, CompilerTool};
 use pada::tools::runner::{TestCase, TestRunner};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "pada", version, about = "Rust 编程作业诊断 Agent")]
@@ -486,6 +489,7 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             &knowledge,
             &mut tracker,
             &mut session,
+            options.interactive,
         );
         output_report(&report, options.report.as_deref(), store)?;
         session.add_step(
@@ -526,9 +530,11 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             &memory_path,
             store,
             options.config.as_deref(),
+            &options.problem,
             &assignment,
             &source_context,
             &mut solution_hints,
+            model_config.as_ref().map(|(_, config)| config),
         )?;
         if let Some(context) = &mut session.context {
             context.hint = hint_level_as_number(level);
@@ -537,6 +543,15 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         store.save_auto_session(&session)?;
         match action {
             LoopAction::Recheck => continue,
+            LoopAction::UseTests { path, cases } => {
+                tests = cases;
+                options.tests = Some(path.clone());
+                if let Some(context) = &mut session.context {
+                    context.tests = Some(path);
+                }
+                println!("测试文件已应用，正在重新诊断。");
+                continue;
+            }
             LoopAction::Reconfigure(configured) => {
                 options.config = Some(configured.path.clone());
                 options.profile = Some(configured.profile_name.clone());
@@ -603,6 +618,7 @@ fn build_compile_report(
 
 enum LoopAction {
     Recheck,
+    UseTests { path: PathBuf, cases: Vec<TestCase> },
     Reconfigure(WizardResult),
     Exit,
 }
@@ -618,9 +634,11 @@ fn interaction(
     memory_path: &Path,
     store: &DataStore,
     config_path: Option<&Path>,
+    problem_path: &Path,
     assignment: &Assignment,
     source_context: &str,
     solution_hints: &mut SolutionHintService,
+    model_config: Option<&pada::config::model::ModelConfig>,
 ) -> pada::error::Result<LoopAction> {
     loop {
         print!("pada[{}]> ", hint_level_as_number(*level));
@@ -725,6 +743,38 @@ fn interaction(
                     ),
                 }
             }
+            InteractiveCommand::Tests(path) => {
+                let Some(path) = path else {
+                    println!("用法: test <file.json> 或 tests <file.json>");
+                    continue;
+                };
+                let path = match absolute_path(Path::new(&path)) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        println!("测试文件路径无效: {error}");
+                        continue;
+                    }
+                };
+                match load_tests(&path) {
+                    Ok(cases) => {
+                        println!("已加载 {} 个测试用例: {}", cases.len(), path.display());
+                        return Ok(LoopAction::UseTests { path, cases });
+                    }
+                    Err(error) => println!("加载测试文件失败: {error}"),
+                }
+            }
+            InteractiveCommand::Case => {
+                if let Err(error) = generate_case_file(
+                    problem_path,
+                    assignment,
+                    knowledge,
+                    tracker,
+                    session,
+                    model_config,
+                ) {
+                    println!("生成测试用例失败: {error}");
+                }
+            }
             InteractiveCommand::Config => {
                 let target = config_path
                     .map(Path::to_path_buf)
@@ -746,6 +796,70 @@ fn interaction(
             }
         }
     }
+}
+
+fn generate_case_file(
+    problem_path: &Path,
+    assignment: &Assignment,
+    knowledge: &pada::memory::KnowledgeProfile,
+    tracker: &mut UsageTracker,
+    session: &mut Session,
+    model_config: Option<&pada::config::model::ModelConfig>,
+) -> pada::error::Result<()> {
+    let config = model_config.ok_or_else(|| {
+        pada::error::PadaError::Config("尚未配置模型；请先在导师模式输入 config 完成配置".into())
+    })?;
+    if !tracker.check_budget() {
+        return Err(pada::error::PadaError::Llm(
+            "Token 预算已用尽，未生成测试用例".into(),
+        ));
+    }
+
+    let profile_summary = knowledge.prompt_summary_at(pada::memory::now_timestamp());
+    let messages = pada::tools::test_gen::build_prompt_with_profile(assignment, &profile_summary);
+    let client = Arc::new(LlmClient::new(config.clone()));
+    eprintln!("⏳ 正在调用模型生成测试用例…（输入 q 或 cancel 并回车可停止）");
+    io::stderr().flush()?;
+
+    let response = match run_model_task(client, &messages, true) {
+        ModelTaskOutcome::Completed(Ok(response)) => response,
+        ModelTaskOutcome::Completed(Err(error)) => {
+            eprintln!("✗ 模型生成失败");
+            return Err(error);
+        }
+        ModelTaskOutcome::Cancelled => {
+            eprintln!("■ 已取消测试用例生成，没有写入文件。");
+            return Ok(());
+        }
+    };
+    eprintln!("✓ 模型生成完成，正在校验 JSON…");
+
+    let usage = pada::telemetry::UsageRecord::from_response(&response, config);
+    tracker.record(&response, config);
+    session.record_usage(usage.clone());
+    session.add_step(
+        StepBuilder::new(session.step_count())
+            .llm_exchange(LlmExchange {
+                messages,
+                response: response.clone(),
+                usage: Some(usage),
+            })
+            .decision(AgentDecision::new(
+                "test_case_generation",
+                "根据当前题目与学习画像生成测试用例，并由 Rust 校验 JSON 结构",
+            ))
+            .build(),
+    );
+
+    let cases = pada::tools::test_gen::parse_test_cases(&response.content)?;
+    let path = pada::tools::test_gen::save_generated_test_cases(problem_path, &cases)?;
+    println!(
+        "已生成 {} 个测试用例并保存到: {}\n输入 test {} 可立即用于当前代码。",
+        cases.len(),
+        path.display(),
+        path.display()
+    );
+    Ok(())
 }
 
 fn step_gate(
@@ -876,6 +990,7 @@ fn show_report_at_level(
         knowledge,
         tracker,
         session,
+        true,
     );
     print_report(&report);
 }

@@ -39,6 +39,7 @@ use crate::agent::llm::{ChatMessage, LlmClient, LlmResponse};
 use crate::error::{PadaError, Result};
 use crate::models::Assignment;
 use crate::tools::runner::TestCase;
+use std::path::{Path, PathBuf};
 
 // ============================================================
 // 边界用例类型（确定性）
@@ -222,4 +223,31 @@ impl TestGenerator {
         self.client
             .chat(&build_prompt_with_profile(assignment, profile_summary))
     }
+}
+
+/// 将生成用例保存到题目文件所在目录；不覆盖已有生成文件。
+pub fn save_generated_test_cases(problem_path: &Path, cases: &[TestCase]) -> Result<PathBuf> {
+    if cases.is_empty() {
+        return Err(PadaError::Parse("模型没有生成可保存的测试用例".into()));
+    }
+    let directory = problem_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut index = 1_usize;
+    let path = loop {
+        let name = if index == 1 {
+            "generated_tests.json".to_owned()
+        } else {
+            format!("generated_tests_{index}.json")
+        };
+        let candidate = directory.join(name);
+        if !candidate.exists() {
+            break candidate;
+        }
+        index += 1;
+    };
+    let json = serde_json::to_string_pretty(cases)
+        .map_err(|error| PadaError::Parse(format!("序列化生成测试失败: {error}")))?;
+    std::fs::write(&path, json).map_err(|error| {
+        PadaError::Config(format!("保存生成测试 {} 失败: {error}", path.display()))
+    })?;
+    Ok(path)
 }

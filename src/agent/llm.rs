@@ -42,6 +42,8 @@ use crate::{
     models::{Assignment, Diagnostic, HintLevel, TestResult},
 };
 use serde::{Deserialize, Serialize};
+use std::io::BufRead;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ============================================================
 // 聊天消息
@@ -250,7 +252,7 @@ pub struct LlmResponse {
 
 /// LLM 客户端，封装 OpenAI 兼容的 chat completions 调用。
 ///
-/// 使用同步 HTTP（ureq），R4 阶段可迁移至异步。
+/// 普通调用使用同步 HTTP；交互调用使用 SSE 流并通过取消标志协作终止。
 pub struct LlmClient {
     /// 模型配置
     config: ModelConfig,
@@ -259,13 +261,37 @@ pub struct LlmClient {
 }
 
 /// 可替换的聊天模型接口，便于诊断能力共享客户端并进行离线测试。
-pub trait ChatModel {
+pub trait ChatModel: Send + Sync {
     fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse>;
+
+    fn chat_cancellable(
+        &self,
+        messages: &[ChatMessage],
+        cancelled: &AtomicBool,
+    ) -> Result<LlmResponse> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PadaError::Llm("模型生成已取消".into()));
+        }
+        let response = self.chat(messages)?;
+        if cancelled.load(Ordering::Acquire) {
+            Err(PadaError::Llm("模型生成已取消".into()))
+        } else {
+            Ok(response)
+        }
+    }
 }
 
 impl ChatModel for LlmClient {
     fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse> {
         LlmClient::chat(self, messages)
+    }
+
+    fn chat_cancellable(
+        &self,
+        messages: &[ChatMessage],
+        cancelled: &AtomicBool,
+    ) -> Result<LlmResponse> {
+        LlmClient::chat_cancellable(self, messages, cancelled)
     }
 }
 
@@ -322,6 +348,44 @@ impl LlmClient {
             .map_err(|e| PadaError::Llm(format!("解析响应 JSON 失败: {}", e)))?;
 
         Self::parse_response(&json)
+    }
+
+    /// 使用 OpenAI 兼容的 SSE 流式响应；取消时丢弃 reader 以关闭 HTTP 连接。
+    pub fn chat_cancellable(
+        &self,
+        messages: &[ChatMessage],
+        cancelled: &AtomicBool,
+    ) -> Result<LlmResponse> {
+        let mut body = self.build_request_body(messages);
+        body["stream"] = serde_json::json!(true);
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+        let endpoint = self.config.chat_endpoint();
+        let request = if self.config.api_key.is_empty() {
+            self.agent.post(&endpoint)
+        } else {
+            self.agent
+                .post(&endpoint)
+                .set("Authorization", &format!("Bearer {}", self.config.api_key))
+        };
+        let response = match request.send_json(body) {
+            Ok(response) => response,
+            Err(ureq::Error::Status(status, response)) => {
+                let status_text = response.status_text().to_owned();
+                let response_body = response.into_string().unwrap_or_default();
+                return Err(PadaError::Llm(format_http_status_error(
+                    &endpoint,
+                    status,
+                    &status_text,
+                    &response_body,
+                )));
+            }
+            Err(error) => {
+                return Err(PadaError::Llm(format!(
+                    "HTTP 请求失败（{endpoint}）: {error}"
+                )));
+            }
+        };
+        parse_stream_response(std::io::BufReader::new(response.into_reader()), cancelled)
     }
 
     /// 构造请求体（纯函数，便于离线测试）。
@@ -418,6 +482,85 @@ fn format_http_status_error(endpoint: &str, status: u16, status_text: &str, body
     } else {
         format!("HTTP 请求失败（{endpoint}）: {status} {status_text}；服务端信息: {detail}")
     }
+}
+
+/// 解析 OpenAI 兼容的 SSE 流式响应，并在每个数据块之间检查取消标志。
+pub fn parse_stream_response<R: BufRead>(
+    mut reader: R,
+    cancelled: &AtomicBool,
+) -> Result<LlmResponse> {
+    let mut content = String::new();
+    let mut model = String::new();
+    let mut input_tokens = 0;
+    let mut output_tokens = 0;
+    let mut line = String::new();
+
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PadaError::Llm("模型生成已取消".into()));
+        }
+        line.clear();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|error| PadaError::Llm(format!("读取模型流式响应失败: {error}")))?;
+        if bytes == 0 {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("event:") {
+            continue;
+        }
+        let data = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
+        if data == "[DONE]" {
+            break;
+        }
+        let json: serde_json::Value = serde_json::from_str(data).map_err(|error| {
+            PadaError::Llm(format!("解析模型流式响应失败: {error}；数据: {data}"))
+        })?;
+        if let Some(message) = json
+            .pointer("/error/message")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| json.get("error").and_then(serde_json::Value::as_str))
+        {
+            return Err(PadaError::Llm(format!("模型流式响应错误: {message}")));
+        }
+        if let Some(value) = json.get("model").and_then(serde_json::Value::as_str) {
+            model = value.to_owned();
+        }
+        if let Some(value) = json
+            .pointer("/choices/0/delta/content")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                json.pointer("/choices/0/message/content")
+                    .and_then(serde_json::Value::as_str)
+            })
+        {
+            content.push_str(value);
+        }
+        if let Some(usage) = json.get("usage") {
+            input_tokens = usage
+                .get("prompt_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(input_tokens as u64) as usize;
+            output_tokens = usage
+                .get("completion_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(output_tokens as u64) as usize;
+        }
+    }
+
+    if cancelled.load(Ordering::Acquire) {
+        return Err(PadaError::Llm("模型生成已取消".into()));
+    }
+    if content.is_empty() {
+        return Err(PadaError::Llm("模型流式响应没有返回文本内容".into()));
+    }
+    Ok(LlmResponse {
+        content,
+        input_tokens,
+        output_tokens,
+        model,
+    })
 }
 
 #[cfg(test)]

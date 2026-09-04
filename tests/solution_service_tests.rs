@@ -64,6 +64,7 @@ fn configured_level_five_uses_model_response_and_records_usage() {
         &KnowledgeProfile::default(),
         &mut tracker,
         &mut session,
+        false,
     );
 
     assert_eq!(report.compile_entries[0].hint.content, "模型生成的参考方案");
@@ -125,6 +126,7 @@ fn configured_level_three_adds_structured_model_explanation() {
         &KnowledgeProfile::default(),
         &mut tracker,
         &mut session,
+        false,
     );
 
     let content = &report.compile_entries[0].hint.content;
@@ -140,6 +142,7 @@ fn configured_level_three_adds_structured_model_explanation() {
         &KnowledgeProfile::default(),
         &mut tracker,
         &mut session,
+        false,
     );
     assert_eq!(report.compile_entries[0].hint.level, HintLevel::Concept);
     assert_eq!(

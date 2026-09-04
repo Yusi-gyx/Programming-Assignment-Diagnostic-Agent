@@ -12,6 +12,16 @@ fn parses_friendly_and_backslash_commands() {
     );
     assert_eq!(parse_command("progress"), InteractiveCommand::Progress);
     assert_eq!(parse_command("config"), InteractiveCommand::Config);
+    assert_eq!(
+        parse_command("test cases.json"),
+        InteractiveCommand::Tests(Some("cases.json".into()))
+    );
+    assert_eq!(
+        parse_command("tests cases.json"),
+        InteractiveCommand::Tests(Some("cases.json".into()))
+    );
+    assert_eq!(parse_command("test"), InteractiveCommand::Tests(None));
+    assert_eq!(parse_command("case"), InteractiveCommand::Case);
     assert_eq!(parse_command("懂了"), InteractiveCommand::Feedback(true));
 }
 

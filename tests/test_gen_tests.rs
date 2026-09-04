@@ -8,8 +8,10 @@
 //! ```
 
 use pada::models::Assignment;
+use pada::tools::runner::TestCase;
 use pada::tools::test_gen::{
     boundary_case_types, build_prompt, build_prompt_with_profile, parse_test_cases,
+    save_generated_test_cases,
 };
 
 // ============================================================
@@ -247,4 +249,32 @@ fn test_parse_case_fields_preserved() {
     let cases = parse_test_cases(content).unwrap();
     assert_eq!(cases[0].input, "1\n2\n3\n");
     assert_eq!(cases[0].input.lines().count(), 3);
+}
+
+#[test]
+fn generated_cases_are_saved_beside_problem_without_overwriting() {
+    let temp = tempfile::tempdir().unwrap();
+    let problem = temp.path().join("problem.md");
+    std::fs::write(&problem, "题目").unwrap();
+    let cases = vec![TestCase::new("basic", "1\n", "1")];
+
+    let first = save_generated_test_cases(&problem, &cases).unwrap();
+    let second = save_generated_test_cases(&problem, &cases).unwrap();
+
+    assert_eq!(first, temp.path().join("generated_tests.json"));
+    assert_eq!(second, temp.path().join("generated_tests_2.json"));
+    let loaded: Vec<TestCase> =
+        serde_json::from_str(&std::fs::read_to_string(first).unwrap()).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].name, "basic");
+}
+
+#[test]
+fn empty_generated_cases_are_not_saved() {
+    let temp = tempfile::tempdir().unwrap();
+    let problem = temp.path().join("problem.md");
+    let result = save_generated_test_cases(&problem, &[]);
+
+    assert!(result.is_err());
+    assert!(!temp.path().join("generated_tests.json").exists());
 }
