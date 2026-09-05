@@ -35,7 +35,7 @@
 //! ]
 //! ```
 
-use crate::agent::llm::{ChatMessage, LlmClient, LlmResponse};
+use crate::agent::llm::{ChatMessage, ChatModel, LlmClient, LlmResponse, ModelTaskKind};
 use crate::error::{PadaError, Result};
 use crate::models::Assignment;
 use crate::tools::runner::TestCase;
@@ -228,15 +228,20 @@ impl TestGenerator {
     ///
     /// 内部流程：构造提示词 → 调用 LLM → 解析响应。
     pub fn generate(&self, assignment: &Assignment) -> Result<Vec<TestCase>> {
-        let messages = build_prompt(assignment);
-        let response: LlmResponse = self.client.chat(&messages)?;
+        let response = self.generate_raw(assignment)?;
+        response.ensure_complete()?;
         parse_test_cases(&response.content)
     }
 
     /// 获取 LLM 响应（不解析），供调用方自行处理或调试。
     pub fn generate_raw(&self, assignment: &Assignment) -> Result<LlmResponse> {
         let messages = build_prompt(assignment);
-        self.client.chat(&messages)
+        self.client.chat_for_task(
+            &messages,
+            ModelTaskKind::TestGeneration,
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut |_| {},
+        )
     }
 
     pub fn generate_raw_with_profile(
@@ -244,8 +249,12 @@ impl TestGenerator {
         assignment: &Assignment,
         profile_summary: &str,
     ) -> Result<LlmResponse> {
-        self.client
-            .chat(&build_prompt_with_profile(assignment, profile_summary))
+        self.client.chat_for_task(
+            &build_prompt_with_profile(assignment, profile_summary),
+            ModelTaskKind::TestGeneration,
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut |_| {},
+        )
     }
 }
 

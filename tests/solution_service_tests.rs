@@ -1,4 +1,4 @@
-use pada::agent::llm::{ChatMessage, ChatModel, LlmResponse};
+use pada::agent::llm::{ChatMessage, ChatModel, LlmResponse, ModelTaskKind};
 use pada::agent::solution::{SolutionHintService, format_model_output};
 use pada::analysis::error_parser::{RustcDiagnostic, Severity};
 use pada::analysis::hint::generate_compile_hint;
@@ -12,6 +12,17 @@ use pada::telemetry::UsageTracker;
 struct MockModel;
 
 impl ChatModel for MockModel {
+    fn chat_for_task(
+        &self,
+        messages: &[ChatMessage],
+        task: ModelTaskKind,
+        cancelled: &std::sync::atomic::AtomicBool,
+        on_chunk: &mut (dyn FnMut(&str) + Send),
+    ) -> pada::error::Result<LlmResponse> {
+        assert_eq!(task, ModelTaskKind::Hint(HintLevel::Solution));
+        self.chat_cancellable_streaming(messages, cancelled, on_chunk)
+    }
+
     fn chat(&self, messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
         assert!(
             messages
@@ -19,6 +30,7 @@ impl ChatModel for MockModel {
                 .any(|message| message.content.contains("E0382"))
         );
         Ok(LlmResponse {
+            details: Default::default(),
             timings: Default::default(),
             content: "模型生成的参考方案".into(),
             input_tokens: 12,
@@ -77,10 +89,22 @@ fn configured_level_five_uses_model_response_and_records_usage() {
 struct ConceptModel;
 
 impl ChatModel for ConceptModel {
+    fn chat_for_task(
+        &self,
+        messages: &[ChatMessage],
+        task: ModelTaskKind,
+        cancelled: &std::sync::atomic::AtomicBool,
+        on_chunk: &mut (dyn FnMut(&str) + Send),
+    ) -> pada::error::Result<LlmResponse> {
+        assert_eq!(task, ModelTaskKind::Hint(HintLevel::Concept));
+        self.chat_cancellable_streaming(messages, cancelled, on_chunk)
+    }
+
     fn chat(&self, messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
         assert!(messages[0].content.contains("Level 3"));
         assert!(messages[0].content.contains("不给本题答案"));
         Ok(LlmResponse {
+        details: Default::default(),
         timings: Default::default(),
             content: "<think>内部推理</think>\n```markdown\n### 知识点说明\n所有权决定值由谁释放。\n\n### 通用示例\n```rust\nlet name = String::from(\"Ada\");\nlet copy = name.clone();\n```\n### 自检问题\n哪个变量拥有数据？\n```"
                 .into(),

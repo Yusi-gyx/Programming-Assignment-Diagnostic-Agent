@@ -8,12 +8,12 @@
 //! ```
 
 use pada::agent::llm::{
-    ChatMessage, LlmClient, LlmResponse, compile_hint_messages, compile_solution_messages,
-    parse_stream_response, test_hint_messages, test_solution_messages,
+    ChatMessage, LlmClient, LlmResponse, ModelTaskKind, compile_hint_messages,
+    compile_solution_messages, parse_stream_response, test_hint_messages, test_solution_messages,
 };
 use pada::analysis::error_parser::{RustcDiagnostic, Severity};
 use pada::config::effort::{EffortMode, EffortPolicy};
-use pada::config::model::ModelConfig;
+use pada::config::model::{ModelConfig, ReasoningProtocol};
 use pada::models::{Assignment, Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult};
 use serde_json::json;
 use std::io::Cursor;
@@ -79,6 +79,82 @@ fn test_ollama_request_omits_incompatible_boolean_reasoning() {
     let body = client.build_request_body(&messages);
 
     assert!(body.get("reasoning").is_none());
+    assert_eq!(body["reasoning_effort"], "medium");
+}
+
+#[test]
+fn ollama_disables_thinking_and_uses_supported_levels() {
+    let body = make_client(false).build_request_body(&[]);
+    assert_eq!(body["reasoning_effort"], "none");
+    assert!(body.get("reasoning").is_none());
+    for (mode, expected) in [
+        (EffortMode::Low, "low"),
+        (EffortMode::Medium, "medium"),
+        (EffortMode::High, "high"),
+        (EffortMode::Xhigh, "high"),
+        (EffortMode::Max, "high"),
+    ] {
+        let mut config = ModelConfig::local("qwen3:8b", 8192);
+        config.reasoning = true;
+        let client = LlmClient::with_effort(config, mode.initial_policy());
+        assert_eq!(client.build_request_body(&[])["reasoning_effort"], expected);
+        assert_eq!(
+            client.build_request_body_for_task(&[], ModelTaskKind::KnowledgeMapping)["reasoning_effort"],
+            "low"
+        );
+    }
+    let client = LlmClient::new(ModelConfig::local("gpt-oss:20b", 8192));
+    assert_eq!(client.build_request_body(&[])["reasoning_effort"], "low");
+}
+
+#[test]
+fn explicit_protocol_controls_proxy_requests_without_mixing_fields() {
+    for protocol in [
+        ReasoningProtocol::Deepseek,
+        ReasoningProtocol::Ollama,
+        ReasoningProtocol::EnableThinking,
+        ReasoningProtocol::Compatible,
+    ] {
+        for enabled in [false, true] {
+            let mut config =
+                ModelConfig::cloud("https://proxy.example/v1", "", "custom", 8192, 0.0, 0.0);
+            config.reasoning_protocol = protocol;
+            config.reasoning = enabled;
+            let body = LlmClient::new(config).build_request_body(&[]);
+            match protocol {
+                ReasoningProtocol::Deepseek => {
+                    assert_eq!(
+                        body["thinking"]["type"],
+                        if enabled { "enabled" } else { "disabled" }
+                    );
+                    assert_eq!(body.get("reasoning_effort").is_some(), enabled);
+                }
+                ReasoningProtocol::Ollama => assert_eq!(
+                    body["reasoning_effort"],
+                    if enabled { "medium" } else { "none" }
+                ),
+                ReasoningProtocol::EnableThinking => {
+                    assert_eq!(body["enable_thinking"], enabled);
+                    assert!(body.get("reasoning_effort").is_none());
+                }
+                ReasoningProtocol::Compatible => {
+                    assert_eq!(body.get("reasoning").is_some(), enabled)
+                }
+                ReasoningProtocol::Auto => unreachable!(),
+            }
+            assert_eq!(
+                body.get("thinking").is_some(),
+                protocol == ReasoningProtocol::Deepseek
+            );
+            assert_eq!(
+                body.get("enable_thinking").is_some(),
+                protocol == ReasoningProtocol::EnableThinking
+            );
+            if protocol != ReasoningProtocol::Compatible {
+                assert!(body.get("reasoning").is_none());
+            }
+        }
+    }
 }
 
 #[test]
@@ -113,6 +189,97 @@ fn test_runtime_effort_is_sent_when_reasoning_is_supported() {
     let client = LlmClient::with_effort(config, EffortPolicy::for_mode(EffortMode::High));
     let body = client.build_request_body(&[ChatMessage::user("test")]);
     assert_eq!(body["reasoning_effort"], "high");
+}
+
+fn deepseek_client(reasoning: bool, mode: EffortMode) -> LlmClient {
+    let mut config = ModelConfig::cloud(
+        "https://api.deepseek.com/v1",
+        "",
+        "deepseek-v4-pro",
+        1_000_000,
+        0.0,
+        0.0,
+    );
+    config.reasoning = reasoning;
+    LlmClient::with_effort(config, mode.initial_policy())
+}
+
+#[test]
+fn deepseek_explicitly_disables_thinking_for_every_task() {
+    let client = deepseek_client(false, EffortMode::Max);
+    for task in [
+        ModelTaskKind::General,
+        ModelTaskKind::KnowledgeMapping,
+        ModelTaskKind::Hint(HintLevel::Concept),
+        ModelTaskKind::Hint(HintLevel::Solution),
+    ] {
+        let body = client.build_request_body_for_task(&[ChatMessage::user("test")], task);
+        assert_eq!(body["thinking"], json!({"type": "disabled"}));
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("reasoning").is_none());
+    }
+}
+
+#[test]
+fn deepseek_uses_native_effort_without_changing_test_policy() {
+    for (mode, expected) in [
+        (EffortMode::Auto, "low"),
+        (EffortMode::Low, "low"),
+        (EffortMode::Medium, "low"),
+        (EffortMode::High, "high"),
+        (EffortMode::Xhigh, "high"),
+        (EffortMode::Max, "max"),
+    ] {
+        let client = deepseek_client(true, mode);
+        for task in [
+            ModelTaskKind::General,
+            ModelTaskKind::Hint(HintLevel::Direction),
+            ModelTaskKind::Hint(HintLevel::Solution),
+        ] {
+            let body = client.build_request_body_for_task(&[], task);
+            assert_eq!(body["thinking"], json!({"type": "enabled"}));
+            assert_eq!(body["reasoning_effort"], expected, "{mode} {task:?}");
+            assert!(body.get("reasoning").is_none());
+        }
+        assert_eq!(mode.initial_policy().run_tests, mode != EffortMode::Low);
+    }
+}
+
+#[test]
+fn deepseek_concepts_and_mapping_use_low_even_in_deep_diagnoses() {
+    for mode in EffortMode::ALL {
+        let client = deepseek_client(true, mode);
+        for task in [
+            ModelTaskKind::KnowledgeMapping,
+            ModelTaskKind::Hint(HintLevel::Concept),
+        ] {
+            let body = client.build_request_body_for_task(&[], task);
+            assert_eq!(body["reasoning_effort"], "low", "{mode} {task:?}");
+        }
+    }
+}
+
+#[test]
+fn deepseek_adapter_uses_host_not_model_name_or_url_substrings() {
+    for (endpoint, direct) in [
+        ("https://api.deepseek.com", true),
+        ("https://API.DEEPSEEK.COM:443/v1/chat/completions", true),
+        ("https://proxy.example/v1", false),
+        ("https://api.deepseek.com.example/v1", false),
+        ("https://proxy.example/api.deepseek.com", false),
+        ("https://api.deepseek.com@proxy.example/v1", false),
+        ("http://localhost:11434/v1", false),
+    ] {
+        let mut config = ModelConfig::cloud(endpoint, "", "deepseek-v4-pro", 8192, 0.0, 0.0);
+        config.reasoning = true;
+        assert_eq!(config.is_deepseek(), direct, "{endpoint}");
+        let body = LlmClient::new(config).build_request_body(&[]);
+        assert_eq!(body.get("thinking").is_some(), direct, "{endpoint}");
+        if !direct && !endpoint.contains("11434") {
+            assert_eq!(body["reasoning"], true);
+            assert_eq!(body["reasoning_effort"], "medium");
+        }
+    }
 }
 
 #[test]
@@ -275,6 +442,75 @@ fn test_client_config_access() {
     assert!(config.reasoning);
 }
 
+#[test]
+fn task_output_caps_are_configurable_and_batches_are_bounded() {
+    let mut config = ModelConfig::local("test-model", 8192);
+    config.output_limits.mapping = 333;
+    config.output_limits.concept = 444;
+    config.output_limits.direction = 555;
+    config.output_limits.solution = 666;
+    config.output_limits.test_generation = 777;
+    let client = LlmClient::new(config);
+    for (task, expected) in [
+        (ModelTaskKind::KnowledgeMapping, 333),
+        (ModelTaskKind::Hint(HintLevel::Concept), 444),
+        (ModelTaskKind::Hint(HintLevel::Direction), 555),
+        (ModelTaskKind::Hint(HintLevel::Solution), 666),
+        (ModelTaskKind::TestGeneration, 777),
+        (
+            ModelTaskKind::HintBatch {
+                level: HintLevel::Direction,
+                count: 3,
+            },
+            1665,
+        ),
+        (
+            ModelTaskKind::HintBatch {
+                level: HintLevel::Direction,
+                count: usize::MAX,
+            },
+            4440,
+        ),
+    ] {
+        assert_eq!(
+            client.build_request_body_for_task(&[], task)["max_tokens"],
+            expected
+        );
+    }
+}
+
+#[test]
+fn truncated_json_and_sse_keep_usage_but_fail_completeness_checks() {
+    let json = json!({"choices":[{"message":{"content":null},"finish_reason":"length"}],
+        "usage":{"prompt_tokens":10,"completion_tokens":40,"completion_tokens_details":{"reasoning_tokens":39}}});
+    let response = LlmClient::parse_response(&json).unwrap();
+    assert!(response.ensure_complete().is_err());
+    assert_eq!(response.output_tokens, 40);
+    assert_eq!(response.details.reasoning_tokens, Some(39));
+    let stream = concat!(
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":40,\"completion_tokens_details\":{\"reasoning_tokens\":39}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let response = parse_stream_response(Cursor::new(stream), &AtomicBool::new(false)).unwrap();
+    assert!(response.content.is_empty());
+    assert!(response.ensure_complete().is_err());
+    assert_eq!(response.output_tokens, 40);
+    assert_eq!(response.details.reasoning_tokens, Some(39));
+}
+
+#[test]
+fn old_response_history_defaults_new_metrics_without_inventing_counts() {
+    let json = json!({"content":"old", "model":"model", "input_tokens":5, "output_tokens":2,
+        "timings":{"prompt_build_ms":0,"api_ttft_ms":12,"total_ms":15}});
+    let response: LlmResponse = serde_json::from_value(json).unwrap();
+    assert_eq!(response.timings.api_ttft_ms, Some(12));
+    assert_eq!(response.timings.api_first_reasoning_ms, None);
+    assert_eq!(response.details.reasoning_tokens, None);
+    assert!(response.ensure_complete().is_ok());
+}
+
 // ============================================================
 // LlmResponse 相等性测试
 // ============================================================
@@ -282,6 +518,7 @@ fn test_client_config_access() {
 #[test]
 fn test_llm_response_eq() {
     let r1 = LlmResponse {
+        details: Default::default(),
         timings: Default::default(),
         content: "hello".into(),
         input_tokens: 10,
@@ -289,6 +526,7 @@ fn test_llm_response_eq() {
         model: "m".into(),
     };
     let r2 = LlmResponse {
+        details: Default::default(),
         timings: Default::default(),
         content: "hello".into(),
         input_tokens: 10,

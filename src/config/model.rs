@@ -7,6 +7,59 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Chat Completions 服务使用的思考控制协议。代理端点可显式选择。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningProtocol {
+    #[default]
+    Auto,
+    Deepseek,
+    Ollama,
+    EnableThinking,
+    Compatible,
+}
+
+/// 服务端输出 Token 上限，不用于估算实际用量；推理模型需为推理 Token 留余量。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct OutputLimits {
+    pub mapping: usize,
+    pub concept: usize,
+    pub direction: usize,
+    pub solution: usize,
+    pub test_generation: usize,
+}
+
+impl Default for OutputLimits {
+    fn default() -> Self {
+        Self {
+            mapping: 2048,
+            concept: 2048,
+            direction: 3072,
+            solution: 4096,
+            test_generation: 8192,
+        }
+    }
+}
+
+impl OutputLimits {
+    pub fn for_task(&self, task: crate::config::effort::ModelTaskKind) -> usize {
+        use crate::config::effort::ModelTaskKind;
+        use crate::models::HintLevel;
+        match task {
+            ModelTaskKind::KnowledgeMapping => self.mapping,
+            ModelTaskKind::Hint(HintLevel::Concept) => self.concept,
+            ModelTaskKind::Hint(HintLevel::Direction) => self.direction,
+            ModelTaskKind::HintBatch { level, count } => self
+                .for_task(ModelTaskKind::Hint(level))
+                .saturating_mul(count.clamp(1, 8)),
+            ModelTaskKind::TestGeneration => self.test_generation,
+            _ => self.solution,
+        }
+        .max(1)
+    }
+}
+
 // ============================================================
 // 单个模型配置
 // ============================================================
@@ -29,8 +82,15 @@ pub struct ModelConfig {
     /// 上下文长度（token 数），用于控制输入截断与预算
     pub context_length: usize,
 
-    /// 是否启用推理链 / reasoning
+    /// 是否启用推理链 / reasoning；省略时默认关闭。
+    #[serde(default)]
     pub reasoning: bool,
+
+    #[serde(default)]
+    pub reasoning_protocol: ReasoningProtocol,
+
+    #[serde(default)]
+    pub output_limits: OutputLimits,
 
     /// 输入 token 单价（每百万 token，单位：元或美元）
     pub input_price: f64,
@@ -48,6 +108,8 @@ impl ModelConfig {
             model_name: model_name.into(),
             context_length,
             reasoning: false,
+            reasoning_protocol: ReasoningProtocol::Auto,
+            output_limits: OutputLimits::default(),
             input_price: 0.0,
             output_price: 0.0,
         }
@@ -68,6 +130,8 @@ impl ModelConfig {
             model_name: model_name.into(),
             context_length,
             reasoning: false,
+            reasoning_protocol: ReasoningProtocol::Auto,
+            output_limits: OutputLimits::default(),
             input_price,
             output_price,
         }
@@ -80,6 +144,19 @@ impl ModelConfig {
     /// 运行时补全标准路径，同时保留已经填写完整路径的配置。
     pub fn chat_endpoint(&self) -> String {
         normalize_chat_endpoint(&self.endpoint)
+    }
+
+    /// 仅官方 DeepSeek 主机使用其专有参数；同名模型的代理服务保持兼容行为。
+    pub fn is_deepseek(&self) -> bool {
+        let endpoint = self.endpoint.trim();
+        let Some((_, rest)) = endpoint.split_once("://") else {
+            return false;
+        };
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        let host = authority.rsplit('@').next().unwrap_or_default();
+        host.split(':')
+            .next()
+            .is_some_and(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
     }
 
     /// 当前 endpoint 是否指向 Ollama 的默认服务端口。
@@ -97,6 +174,39 @@ impl ModelConfig {
         authority
             .rsplit_once(':')
             .is_some_and(|(_, port)| port == "11434")
+    }
+
+    pub fn resolved_reasoning_protocol(&self) -> ReasoningProtocol {
+        match self.reasoning_protocol {
+            ReasoningProtocol::Auto if self.is_deepseek() => ReasoningProtocol::Deepseek,
+            ReasoningProtocol::Auto if self.is_ollama() => ReasoningProtocol::Ollama,
+            ReasoningProtocol::Auto => ReasoningProtocol::Compatible,
+            protocol => protocol,
+        }
+    }
+
+    pub fn is_ollama_gpt_oss(&self) -> bool {
+        let model = self.model_name.to_ascii_lowercase();
+        let name = model.rsplit('/').next().unwrap_or(&model);
+        self.resolved_reasoning_protocol() == ReasoningProtocol::Ollama
+            && (name == "gpt-oss" || name.starts_with("gpt-oss:") || name.starts_with("gpt-oss-"))
+    }
+
+    /// 显示配置意图和已知限制，不把省略参数误称为已关闭服务端思考。
+    pub fn reasoning_notice(&self) -> &'static str {
+        if self.is_ollama_gpt_oss() && !self.reasoning {
+            return "GPT-OSS 无法完全关闭思考，将使用 low 降低推理强度。";
+        }
+        match (self.resolved_reasoning_protocol(), self.reasoning) {
+            (ReasoningProtocol::Compatible | ReasoningProtocol::Auto, false) => {
+                "当前兼容协议仅省略推理参数，无法保证服务端关闭思考；如需控制，请选择服务支持的思考协议。"
+            }
+            (ReasoningProtocol::Compatible | ReasoningProtocol::Auto, true) => {
+                "将请求兼容推理参数；请确认服务支持，开启后可能增加等待时间和 Token 费用。"
+            }
+            (_, true) => "将请求开启思考，可能增加等待时间和 Token 费用；复杂分析时再开启。",
+            _ => "将显式请求关闭思考；是否生效取决于服务版本和模型是否支持切换。",
+        }
     }
 }
 

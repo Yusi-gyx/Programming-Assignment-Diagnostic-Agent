@@ -1,7 +1,8 @@
 //! 可取消的交互式模型任务。
 
-use crate::agent::llm::{ChatMessage, ChatModel, LlmResponse};
+use crate::agent::llm::{ChatMessage, ChatModel, LlmResponse, ModelTaskKind};
 use crate::error::Result;
+use crate::history::{Session, StepBuilder, ToolCall};
 use std::io;
 use std::sync::{
     Arc,
@@ -9,6 +10,55 @@ use std::sync::{
     mpsc,
 };
 use std::time::Duration;
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct FailedModelCall {
+    pub total_ms: u64,
+    pub cancelled: bool,
+    pub error: String,
+}
+
+/// 失败和取消也进入轨迹；没有 API usage 时不猜测 Token，不保存未完成正文。
+pub fn run_recorded_model_task(
+    model: Arc<dyn ChatModel>,
+    messages: &[ChatMessage],
+    interactive: bool,
+    task: ModelTaskKind,
+    session: &mut Session,
+    on_chunk: impl FnMut(&str) + Send,
+) -> ModelTaskOutcome {
+    let started = std::time::Instant::now();
+    let outcome = run_model_task_streaming_for_kind(model, messages, interactive, task, on_chunk);
+    let error = match &outcome {
+        ModelTaskOutcome::Completed(Ok(_)) => return outcome,
+        ModelTaskOutcome::Completed(Err(error)) => error.to_string(),
+        ModelTaskOutcome::Cancelled => "用户取消模型调用；服务端最终用量未知".into(),
+    };
+    let failure = FailedModelCall {
+        total_ms: started.elapsed().as_millis() as u64,
+        cancelled: matches!(outcome, ModelTaskOutcome::Cancelled),
+        error,
+    };
+    eprintln!(
+        "模型调用{}，已等待 {:.2} 秒；未取得完整 API 用量。",
+        if failure.cancelled {
+            "已取消"
+        } else {
+            "失败"
+        },
+        failure.total_ms as f64 / 1000.0
+    );
+    session.add_step(
+        StepBuilder::new(session.step_count())
+            .tool_call(ToolCall::new(
+                "llm_failed_call",
+                serde_json::json!({"task": format!("{task:?}"), "messages": messages}).to_string(),
+                serde_json::json!(failure).to_string(),
+            ))
+            .build(),
+    );
+    outcome
+}
 
 pub enum ModelTaskOutcome {
     Completed(Result<LlmResponse>),
@@ -28,12 +78,29 @@ pub fn run_model_task_streaming(
     model: Arc<dyn ChatModel>,
     messages: &[ChatMessage],
     interactive: bool,
+    on_chunk: impl FnMut(&str) + Send,
+) -> ModelTaskOutcome {
+    run_model_task_streaming_for_kind(
+        model,
+        messages,
+        interactive,
+        ModelTaskKind::General,
+        on_chunk,
+    )
+}
+
+pub fn run_model_task_streaming_for_kind(
+    model: Arc<dyn ChatModel>,
+    messages: &[ChatMessage],
+    interactive: bool,
+    task: ModelTaskKind,
     mut on_chunk: impl FnMut(&str) + Send,
 ) -> ModelTaskOutcome {
     if !interactive {
         let cancelled = AtomicBool::new(false);
-        return ModelTaskOutcome::Completed(model.chat_cancellable_streaming(
+        return ModelTaskOutcome::Completed(model.chat_for_task(
             messages,
+            task,
             &cancelled,
             &mut on_chunk,
         ));
@@ -49,7 +116,7 @@ pub fn run_model_task_streaming(
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let chunk_sender = sender.clone();
-        let result = model.chat_cancellable_streaming(&messages, &worker_cancelled, &mut |chunk| {
+        let result = model.chat_for_task(&messages, task, &worker_cancelled, &mut |chunk| {
             let _ = chunk_sender.send(Event::Chunk(chunk.to_owned()));
         });
         let _ = sender.send(Event::Finished(result));

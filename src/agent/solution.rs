@@ -1,9 +1,12 @@
 //! Level 3-5 模型增强提示生成、格式清理与会话记录。
 
+mod batches;
+
 use crate::agent::llm::{
-    ChatModel, LlmClient, compile_hint_messages_with_policy, test_hint_messages,
+    ChatModel, LlmClient, ModelTaskKind, compile_hint_messages_with_policy, concept_hint_messages,
+    test_hint_messages,
 };
-use crate::agent::model_task::{ModelTaskOutcome, run_model_task_streaming};
+use crate::agent::model_task::{ModelTaskOutcome, run_recorded_model_task};
 use crate::analysis::hint::Hint;
 use crate::config::effort::{EffortMode, EffortPolicy, ModelCallBudget};
 use crate::config::model::ModelConfig;
@@ -101,6 +104,9 @@ impl SolutionHintService {
         call_budget: &mut ModelCallBudget,
     ) -> StreamedReportEntries {
         let mut streamed = StreamedReportEntries::default();
+        if self.cache.len() >= 128 {
+            self.cache.clear();
+        }
         let needs_model_hint = report
             .compile_entries
             .iter()
@@ -112,7 +118,9 @@ impl SolutionHintService {
         if !needs_model_hint {
             return streamed;
         }
-        let (Some(config), Some(model)) = (self.config.as_ref(), self.model.as_ref()) else {
+        let model_config = self.config.clone();
+        let chat_model = self.model.clone();
+        let (Some(config), Some(model)) = (model_config.as_ref(), chat_model.as_ref()) else {
             return streamed;
         };
         let profile_summary = knowledge.prompt_summary_at(now_timestamp());
@@ -141,15 +149,25 @@ impl SolutionHintService {
                 continue;
             }
             current += 1;
-            let key = format!(
-                "compile:{level:?}:{}:{:?}:{}:{}",
-                stable_context_key(source_context),
-                entry.diag.location,
-                entry.diag.code.as_deref().unwrap_or(""),
-                entry.diag.message
-            );
+            let messages =
+                if level == HintLevel::Concept && !entry.classified.knowledge_points.is_empty() {
+                    concept_hint_messages(&entry.classified, &profile_summary)
+                } else {
+                    compile_hint_messages_with_policy(
+                        assignment,
+                        source_context,
+                        &entry.diag,
+                        &entry.classified,
+                        level,
+                        &entry.hint.content,
+                        &profile_summary,
+                        self.policy,
+                    )
+                };
+            let key = serde_json::json!(messages).to_string();
             if let Some(content) = self.cache.get(&key) {
                 entry.hint = Hint::new(level, content.clone());
+                record_cache_hit(session, level);
                 continue;
             }
             if !tracker.check_budget() {
@@ -162,28 +180,25 @@ impl SolutionHintService {
                 entry.hint = call_limit_hint(level, self.policy.max_model_calls);
                 continue;
             }
-            let messages = compile_hint_messages_with_policy(
-                assignment,
-                source_context,
-                &entry.diag,
-                &entry.classified,
-                level,
-                &entry.hint.content,
-                &profile_summary,
-                self.policy,
-            );
             model_call_started(level, current, total, interactive);
             print!("\n{}", compile_prefixes[index]);
             let _ = io::stdout().flush();
             streamed.compile.push(index);
-            match run_model_task_streaming(Arc::clone(model), &messages, interactive, |chunk| {
-                if colored {
-                    print!("\x1b[34m{chunk}\x1b[0m");
-                } else {
-                    print!("{chunk}");
-                }
-                let _ = io::stdout().flush();
-            }) {
+            match run_recorded_model_task(
+                Arc::clone(model),
+                &messages,
+                interactive,
+                ModelTaskKind::Hint(level),
+                session,
+                |chunk| {
+                    if colored {
+                        print!("\x1b[34m{chunk}\x1b[0m");
+                    } else {
+                        print!("{chunk}");
+                    }
+                    let _ = io::stdout().flush();
+                },
+            ) {
                 ModelTaskOutcome::Completed(Ok(response)) => {
                     println!();
                     record_exchange(
@@ -195,6 +210,11 @@ impl SolutionHintService {
                         level,
                         "使用已配置模型生成编译错误分层提示",
                     );
+                    if let Err(error) = response.ensure_complete() {
+                        println!("{error}；保留基础诊断。");
+                        streamed.compile.retain(|i| *i != index);
+                        continue;
+                    }
                     let content = format_model_output(&response.content);
                     self.cache.insert(key, content.clone());
                     entry.hint = Hint::new(level, content);
@@ -218,22 +238,48 @@ impl SolutionHintService {
             }
         }
 
+        let (batched, cancelled) = self.enrich_test_batches(
+            report,
+            assignment,
+            source_context,
+            &profile_summary,
+            tracker,
+            session,
+            interactive,
+            call_budget,
+        );
+        if cancelled {
+            return streamed;
+        }
         for (index, entry) in report.test_entries.iter_mut().enumerate() {
+            if batched.contains(&index) {
+                continue;
+            }
             let level = entry.hint.level;
             if !model_enriches(level) {
                 continue;
             }
             current += 1;
-            let key = format!(
-                "test:{level:?}:{}:{}:{}:{}:{}",
-                stable_context_key(source_context),
-                entry.result.name,
-                entry.result.expected_output,
-                entry.result.actual_output,
-                entry.result.runtime_error.as_deref().unwrap_or("")
-            );
+            let scoped_source =
+                crate::agent::context::limit_source(source_context, self.policy.source);
+            let messages =
+                if level == HintLevel::Concept && !entry.classified.knowledge_points.is_empty() {
+                    concept_hint_messages(&entry.classified, &profile_summary)
+                } else {
+                    test_hint_messages(
+                        assignment,
+                        &scoped_source,
+                        &entry.result,
+                        &entry.classified,
+                        level,
+                        &entry.hint.content,
+                        &profile_summary,
+                    )
+                };
+            let key = serde_json::json!(messages).to_string();
             if let Some(content) = self.cache.get(&key) {
                 entry.hint = Hint::new(level, content.clone());
+                record_cache_hit(session, level);
                 continue;
             }
             if !tracker.check_budget() {
@@ -246,29 +292,25 @@ impl SolutionHintService {
                 entry.hint = call_limit_hint(level, self.policy.max_model_calls);
                 continue;
             }
-            let scoped_source =
-                crate::agent::context::limit_source(source_context, self.policy.source);
-            let messages = test_hint_messages(
-                assignment,
-                &scoped_source,
-                &entry.result,
-                &entry.classified,
-                level,
-                &entry.hint.content,
-                &profile_summary,
-            );
             model_call_started(level, current, total, interactive);
             print!("\n{}", test_prefixes[index]);
             let _ = io::stdout().flush();
             streamed.tests.push(index);
-            match run_model_task_streaming(Arc::clone(model), &messages, interactive, |chunk| {
-                if colored {
-                    print!("\x1b[34m{chunk}\x1b[0m");
-                } else {
-                    print!("{chunk}");
-                }
-                let _ = io::stdout().flush();
-            }) {
+            match run_recorded_model_task(
+                Arc::clone(model),
+                &messages,
+                interactive,
+                ModelTaskKind::Hint(level),
+                session,
+                |chunk| {
+                    if colored {
+                        print!("\x1b[34m{chunk}\x1b[0m");
+                    } else {
+                        print!("{chunk}");
+                    }
+                    let _ = io::stdout().flush();
+                },
+            ) {
                 ModelTaskOutcome::Completed(Ok(response)) => {
                     println!();
                     record_exchange(
@@ -280,6 +322,11 @@ impl SolutionHintService {
                         level,
                         "使用已配置模型生成测试失败分层提示",
                     );
+                    if let Err(error) = response.ensure_complete() {
+                        println!("{error}；保留基础诊断。");
+                        streamed.tests.retain(|i| *i != index);
+                        continue;
+                    }
                     let content = format_model_output(&response.content);
                     self.cache.insert(key, content.clone());
                     entry.hint = Hint::new(level, content);
@@ -311,6 +358,20 @@ fn call_limit_hint(level: HintLevel, limit: usize) -> Hint {
         level,
         format!("当前思考模式最多允许 {limit} 次模型调用；本轮其余问题保留 Rust 基础诊断。"),
     )
+}
+
+fn record_cache_hit(session: &mut Session, level: HintLevel) {
+    session.add_step(
+        StepBuilder::new(session.step_count())
+            .decision(AgentDecision::new(
+                "hint_cache",
+                format!(
+                    "复用 Level {} 已完成提示，不消耗模型调用预算；原始诊断证据保留在报告中",
+                    hint_level_number(level)
+                ),
+            ))
+            .build(),
+    );
 }
 
 fn record_exchange(
@@ -453,13 +514,4 @@ fn failed_hint(error: crate::error::PadaError) -> Hint {
         HintLevel::Solution,
         format!("LLM 参考方案生成失败：{error}。请检查 endpoint、API key 和网络。"),
     )
-}
-
-fn stable_context_key(value: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }

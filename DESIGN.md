@@ -139,11 +139,19 @@ CLI
 
 当前 Cargo 模式只检查编译，不执行外部 JSON 测试。该限制在引入可靠的 Cargo 构建产物解析前保持显式。
 
+### 5.0 提示合并与缓存
+
+Level 3 对已知知识点只生成通用概念、示例和自检问题，不把具体题目或提交交给模型。同一组知识点（规范化排序、去重）和学习画像共享讲解，编译位置与每个失败用例的确定性证据仍逐项保留在报告中；知识点未知时继续传入具体证据。
+
+Level 4–5 的多个失败用例每批最多 8 项，共用一份题目、源码和画像。模型返回带原用例编号的 JSON，Rust 校验编号必须完整、唯一、无越界，内容不能为空，再按原序写回报告。单条提示仍可直接流式展示；批量 JSON 完成校验后才渲染正文。批量失败或截断不自动重试，保留基础诊断，避免放大调用耗时。
+
+提示缓存按实际消息内容区分等级、题目、源码、证据和画像，三级通用讲解可跨条目复用；知识点映射缓存包含完整源码、题目和失败结果，变化即失效。缓存仅存在于服务实例内，切换 profile/effort 后随实例重建，不跨会话持久化。缓存命中不消耗调用或 Token 预算，并记录复用决策。提示缓存达到 128 项后在下一轮清空；映射缓存最多 16 项，避免无限增长。
+
 ### 5.1 思考模式
 
 `--effort` 与导师命令 `effort` 使用同一个 `EffortMode`，所有具体开关集中解析为 `EffortPolicy`，业务模块只读取策略字段：
 
-| 模式 | Reasoning effort | 模型调用上限/轮 | 源码范围 | 测试 | 二次验证 |
+| 模式 | 通用 Reasoning effort 基准 | 模型调用上限/轮 | 源码范围 | 测试 | 二次验证 |
 |---|---|---:|---|---|---:|
 | `low` | low | 1 | 2 文件、21 行窗口、16 KiB | 跳过 | 0 |
 | `medium` | medium | 4 | 12 文件、41 行窗口、64 KiB | 执行 | 0 |
@@ -153,7 +161,13 @@ CLI
 
 默认模式为 `medium`。`auto` 先使用 medium 的确定性探测策略收集编译错误数、Rust 文件数、测试失败数、运行时错误和源码规模，再解析为 low/medium/high/xhigh/max；模型调用与源码输入使用解析后的策略。显式 low 即使提供 `--tests` 也会清楚提示并跳过，`--generate-tests` 与 low 组合直接拒绝，避免生成后不执行。
 
-模型 profile 的 `reasoning = true` 表示接口支持推理参数，此时请求附带策略对应的 `reasoning_effort`；Ollama 兼容端点继续不发送不兼容字段。模型生成测试、失败知识点映射和报告提示共享每轮调用上限。high 以上会重复编译及测试并比较结构化结果，发现非确定性时给出警告并写入轨迹。
+模型推理参数由客户端按接口与调用用途适配，不修改 `EffortPolicy` 的测试执行、源码范围、验证次数或调用预算。官方 DeepSeek 主机 `api.deepseek.com` 使用 `thinking.type = enabled/disabled` 显式落实 profile 的 `reasoning` 开关，关闭时省略 `reasoning_effort`，不发送通用布尔 `reasoning` 字段。开启时，知识点映射和 Level 3 概念提示固定使用原生 `low`；其余任务（生成测试、Level 4–5 提示及通用调用）将 low/medium 映射为 low、high/xhigh 映射为 high、max 映射为 max。auto 使用解析后模式，探测阶段按 medium 处理。默认 medium 因而使用低强度推理且仍执行测试。
+
+上述适配遵循 [DeepSeek Chat Completions 参数协议](https://api-docs.deepseek.com/api/create-chat-completion/)；medium 到 low 是本项目为降低延迟选择的策略，避免服务端将 medium 隐式映射为 high。协议由 profile 的 `reasoning_protocol` 决定：默认 auto 根据 DeepSeek 官方主机或 Ollama 默认端口识别，其余回退 compatible；用户可为代理显式选择 deepseek/ollama/enable_thinking/compatible，不根据模型名称猜测服务协议。
+
+Ollama 的 Chat Completions 兼容接口关闭思考时发送 `reasoning_effort = none`，开启时使用 low/medium/high（xhigh/max 映射 high），知识点映射和三级提示使用 low；不发送布尔 reasoning 或原生接口的 think 字段。GPT-OSS 无法关闭思考，因此 false 时使用 low，并在向导和启动时明确提醒。[Ollama 协议](https://docs.ollama.com/api/openai-compatibility)、[模型限制](https://docs.ollama.com/capabilities/thinking)。enable_thinking 协议将布尔值直接写入顶层同名字段，供[百炼混合思考模型](https://www.alibabacloud.com/help/en/model-studio/deep-thinking)等支持此字段的服务使用，不附带其他协议字段。具体服务版本及模型必须支持开关，纯思考模型不能保证关闭。compatible 保留旧版行为：true 发送 reasoning / reasoning_effort，false 省略参数，并明确提醒不能保证服务端关闭推理。
+
+模型生成测试、失败知识点映射和报告提示共享每轮调用上限。high 以上会重复编译及测试并比较结构化结果，发现非确定性时给出警告并写入轨迹。
 
 ## 6. LLM 边界
 
@@ -163,7 +177,11 @@ CLI 默认请求 streaming，并把教学提示直接逐块写入诊断报告中
 
 题目首次读入后由 Rust 按 Markdown 章节整理为结构化规则，去除空白装饰及重复行，同时保留约束和代码样例。后续提示复用规则，不额外调用模型压缩。原始题目保留在历史中用于审计。Cargo 上下文读取项目中的 Rust 模块（跳过构建目录和符号链接），编译提示按诊断文件及行号选取附近源码；无定位的黑盒测试仍保留完整上下文，避免无依据地丢失代码。
 
-客户端在执行期间只收集指标，不穿插打印。诊断报告结束后统一展示读取输入、编译、分析/测试、报告渲染，以及每次模型调用的请求体构建时间、从发送请求到首个正文块的 TTFT、总耗时和 API 返回的输入/输出 Token。成功调用的 `LlmResponse.timings` 随会话保存，旧版记录缺失该字段时使用默认值；编译耗时记录在工具轨迹中。普通 JSON 回退的首段时间包含完整响应等待，不等同于服务端首 Token 时间。
+客户端在执行期间收集指标，诊断报告结束后统一展示读取输入、编译、分析/测试、报告渲染，以及每次模型调用的请求体构建时间、首个有效 SSE JSON 事件、首个推理块、首个可见正文块 TTFT、总耗时和 API 输入/输出 Token。推理块正文不展示，`usage.completion_tokens_details.reasoning_tokens` 仅用于明细展示，是输出 Token 的子集，不重复计费或从字符数推算。响应中的结束原因随 `LlmResponse.details` 保存。普通 JSON 回退明确标注完整响应等待，不能从中拆分服务端推理时间；旧历史新增字段默认未知。
+
+失败和取消通过统一模型任务入口记录 `llm_failed_call` 工具轨迹（请求消息、任务用途、状态、实际等待毫秒及错误摘要），及时显示等待时长并保存会话；没有完整响应时用量标注未知，不伪造零用量记录，也不保存取消后的未完成正文。失败/取消耗时仅表示客户端等待到返回的时间，无法保证服务端停止或未收费。成功流式调用的各阶段时间是客户端观测边界，不等同于精确的服务端计算时间。
+
+每个模型请求按任务设置 `max_tokens`：知识点映射 2048、三级提示 2048、四级提示 3072、五级/通用提示 4096、生成 5–8 个测试用例 8192。批量提示按单项上限乘实际批大小（最多 8）设置。profile 的 `output_limits` 可分别覆盖；省略时使用默认值，配置向导更新 profile 时保留用户的已有上限。此上限不是实际用量估算；推理模型可能将推理 Token 计入上限，复杂任务可提高配置。`finish_reason = length` 或其他非正常结束原因禁止结果进入缓存、知识点映射和测试文件，但 API 已返回的用量仍按原值计费并保存。
 
 约束如下：
 
@@ -181,7 +199,7 @@ CLI 默认请求 streaming，并把教学提示直接逐块写入诊断报告中
 
 配置统一位于数据目录 `config.toml`，支持多个命名 profile 和活动 profile。CLI `--profile` 可覆盖活动项；导师命令 `config` 负责创建、更新、选择并立即应用配置。思考模式属于会话级运行策略，通过 `--effort` 或导师命令 `effort` 设置并保存在恢复上下文中，不复制到各个模型 profile。导师模式切换 `effort` 只更新下一轮配置，不重新输出或重新诊断当前报告；新策略在随后执行 `recheck`、加载测试等下一次诊断时解析并生效。
 
-每个 profile 必须包含 endpoint、API key、模型名、上下文长度、reasoning 开关以及每百万输入/输出 Token 价格。endpoint 可为服务根地址、`/v1` 根地址或完整 Chat Completions 地址。
+每个 profile 包含 endpoint、API key、模型名、上下文长度、reasoning 开关以及每百万输入/输出 Token 价格。reasoning 默认 false，旧配置省略该字段也按 false 加载；已有显式 true 不被覆盖。可选 reasoning_protocol 默认 auto，旧配置无需迁移。向导选择 reasoning 前提醒开启会增加等待时间和 Token 费用，配置摘要、切换 profile 和启动时说明实际控制方式及已知限制。DeepSeek/Ollama 预设保存对应协议，自定义预设可选择协议。endpoint 可为服务根地址、`/v1` 根地址或完整 Chat Completions 地址。
 
 ### R4 进度与取消
 

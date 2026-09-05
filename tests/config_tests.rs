@@ -6,12 +6,52 @@
 //! cargo test --test config_tests
 //! ```
 
-use pada::config::model::{Config, ModelConfig, normalize_chat_endpoint};
+use pada::config::model::{Config, ModelConfig, ReasoningProtocol, normalize_chat_endpoint};
 use std::collections::HashMap;
 
 // ============================================================
 // ModelConfig 测试
 // ============================================================
+
+#[test]
+fn missing_reasoning_defaults_off_and_explicit_settings_survive_roundtrip() {
+    let original = ModelConfig::local("qwen3:8b", 8192);
+    let mut json = serde_json::to_value(&original).unwrap();
+    json.as_object_mut().unwrap().remove("reasoning");
+    json.as_object_mut().unwrap().remove("reasoning_protocol");
+    let config: ModelConfig = serde_json::from_value(json).unwrap();
+    assert!(!config.reasoning);
+    assert_eq!(config.reasoning_protocol, ReasoningProtocol::Auto);
+    let toml = toml::to_string(&config).unwrap();
+    assert!(
+        !toml::from_str::<ModelConfig>(&toml.replace("reasoning = false\n", ""))
+            .unwrap()
+            .reasoning
+    );
+
+    let mut enabled = config;
+    enabled.reasoning = true;
+    enabled.reasoning_protocol = ReasoningProtocol::EnableThinking;
+    let restored: ModelConfig = toml::from_str(&toml::to_string(&enabled).unwrap()).unwrap();
+    assert_eq!(restored, enabled);
+    assert!(
+        Config::default_template()
+            .profiles
+            .values()
+            .all(|config| !config.reasoning)
+    );
+}
+
+#[test]
+fn reasoning_notice_distinguishes_best_effort_from_explicit_control() {
+    let unknown = ModelConfig::cloud("https://proxy.example", "", "model", 8192, 0.0, 0.0);
+    assert!(unknown.reasoning_notice().contains("无法保证"));
+    let local = ModelConfig::local("qwen3:8b", 8192);
+    assert!(local.reasoning_notice().contains("显式请求关闭"));
+    let oss = ModelConfig::local("gpt-oss:20b", 8192);
+    assert!(oss.reasoning_notice().contains("无法完全关闭"));
+    assert!(oss.reasoning_notice().contains("low"));
+}
 
 #[test]
 fn test_model_config_local() {

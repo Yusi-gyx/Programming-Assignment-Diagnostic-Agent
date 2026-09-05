@@ -1,7 +1,7 @@
 //! 使用配置模型为黑盒测试失败映射 Rust 知识点。
 
-use crate::agent::llm::{ChatMessage, ChatModel, LlmClient, LlmResponse};
-use crate::agent::model_task::{ModelTaskOutcome, run_model_task};
+use crate::agent::llm::{ChatMessage, ChatModel, LlmClient, LlmResponse, ModelTaskKind};
+use crate::agent::model_task::{ModelTaskOutcome, run_recorded_model_task};
 use crate::analysis::classifier::classify_test_result;
 use crate::config::effort::{EffortMode, EffortPolicy, ModelCallBudget};
 use crate::config::model::ModelConfig;
@@ -17,6 +17,7 @@ pub struct TestKnowledgeMapper {
     config: Option<ModelConfig>,
     model: Option<Arc<dyn ChatModel>>,
     policy: EffortPolicy,
+    cache: std::cell::RefCell<std::collections::HashMap<String, Vec<Diagnostic>>>,
 }
 
 impl TestKnowledgeMapper {
@@ -32,6 +33,7 @@ impl TestKnowledgeMapper {
             config,
             model,
             policy,
+            cache: Default::default(),
         }
     }
 
@@ -40,6 +42,7 @@ impl TestKnowledgeMapper {
             config: Some(config),
             model: Some(Arc::from(model)),
             policy: EffortPolicy::for_mode(EffortMode::Medium),
+            cache: Default::default(),
         }
     }
 
@@ -84,6 +87,22 @@ impl TestKnowledgeMapper {
         let (Some(config), Some(model)) = (self.config.as_ref(), self.model.as_ref()) else {
             return Ok(fallback());
         };
+        let full_source = source_context;
+        let source_context =
+            crate::agent::context::limit_source(source_context, self.policy.source);
+        let messages = mapping_messages(assignment, &source_context, failures);
+        let key = serde_json::json!({"messages": messages, "failures": failures, "full_source": full_source}).to_string();
+        if let Some(mapped) = self.cache.borrow().get(&key) {
+            session.add_step(
+                StepBuilder::new(session.step_count())
+                    .decision(AgentDecision::new(
+                        "test_mapping_cache",
+                        "题目、源码和失败结果未变化，复用已校验知识点映射，不消耗模型调用预算",
+                    ))
+                    .build(),
+            );
+            return Ok(mapped.clone());
+        }
         if !tracker.check_budget() {
             return Ok(fallback());
         }
@@ -91,17 +110,29 @@ impl TestKnowledgeMapper {
             return Ok(fallback());
         }
 
-        let source_context =
-            crate::agent::context::limit_source(source_context, self.policy.source);
-        let messages = mapping_messages(assignment, &source_context, failures);
         eprintln!("正在调用模型映射测试知识点（输入 q / cancel 并回车可停止）");
-        let response =
-            match run_model_task(Arc::clone(model), &messages, std::io::stdin().is_terminal()) {
-                ModelTaskOutcome::Completed(result) => result?,
-                ModelTaskOutcome::Cancelled => return Err(PadaError::Cancelled),
-            };
-        let mapped = parse_mapping_response(&response.content, failures);
+        let response = match run_recorded_model_task(
+            Arc::clone(model),
+            &messages,
+            std::io::stdin().is_terminal(),
+            ModelTaskKind::KnowledgeMapping,
+            session,
+            |_| {},
+        ) {
+            ModelTaskOutcome::Completed(result) => result?,
+            ModelTaskOutcome::Cancelled => return Err(PadaError::Cancelled),
+        };
+        let mapped = response
+            .ensure_complete()
+            .and_then(|()| parse_mapping_response(&response.content, failures));
         record_exchange(session, tracker, config, messages, response);
+        if let Ok(mapped) = &mapped {
+            let mut cache = self.cache.borrow_mut();
+            if cache.len() >= 16 {
+                cache.clear();
+            }
+            cache.insert(key, mapped.clone());
+        }
         mapped
     }
 }

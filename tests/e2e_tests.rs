@@ -231,6 +231,7 @@ fn test_full_workflow_token_budget() {
     for _ in 0..3 {
         assert!(tracker.check_budget(), "应在预算内");
         let resp = LlmResponse {
+            details: Default::default(),
             timings: Default::default(),
             content: "回复".into(),
             input_tokens: 80,
@@ -246,6 +247,7 @@ fn test_full_workflow_token_budget() {
 
     // 第 4 次调用后累计 480 < 500
     let resp = LlmResponse {
+        details: Default::default(),
         timings: Default::default(),
         content: "回复".into(),
         input_tokens: 80,

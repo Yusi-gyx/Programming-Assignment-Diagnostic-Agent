@@ -4,8 +4,8 @@ use pada::agent::export::{available_export_target, choose_export_target};
 use pada::agent::interaction::{
     InteractiveCommand, help_text, parse_command, reset_hint_for_new_tests,
 };
-use pada::agent::llm::LlmClient;
-use pada::agent::model_task::{ModelTaskOutcome, run_model_task};
+use pada::agent::llm::{LlmClient, ModelTaskKind};
+use pada::agent::model_task::{ModelTaskOutcome, run_recorded_model_task};
 use pada::agent::progress::{
     ProgressReporter, SilentProgress, StepChoice, StepController, parse_step_choice,
 };
@@ -245,8 +245,13 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         ));
     }
     let mut model_config = load_profile(options.config.as_deref(), options.profile.as_deref())?;
-    if let Some((name, _)) = &model_config {
+    if let Some((name, config)) = &model_config {
         eprintln!("模型配置: {name}");
+        eprintln!(
+            "Reasoning={}: {}",
+            config.reasoning,
+            config.reasoning_notice()
+        );
     }
     let mut session = match options.history.as_deref() {
         Some(path) => {
@@ -349,11 +354,16 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         let profile_summary = knowledge.prompt_summary_at(pada::memory::now_timestamp());
         let messages =
             pada::tools::test_gen::build_prompt_with_profile(&assignment, &profile_summary);
-        let response = match run_model_task(
+        let outcome = run_recorded_model_task(
             Arc::new(LlmClient::with_effort(config.clone(), effective_policy)),
             &messages,
             io::stdin().is_terminal(),
-        ) {
+            ModelTaskKind::TestGeneration,
+            &mut session,
+            |_| {},
+        );
+        store.save_auto_session(&session)?;
+        let response = match outcome {
             ModelTaskOutcome::Completed(result) => result?,
             ModelTaskOutcome::Cancelled => return Err(pada::error::PadaError::Cancelled),
         };
@@ -376,6 +386,8 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
                 ))
                 .build(),
         );
+        store.save_auto_session(&session)?;
+        response.ensure_complete()?;
         tests.extend(pada::tools::test_gen::parse_test_cases(&response.content)?);
         carried_model_calls = 1;
         eprintln!("已生成 {} 个边界测试。", tests.len());
@@ -583,6 +595,7 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             let mapped = match mapping {
                 Ok(mapped) => mapped,
                 Err(pada::error::PadaError::Cancelled) => {
+                    store.save_auto_session(&session)?;
                     return Err(pada::error::PadaError::Cancelled);
                 }
                 Err(error) => {
@@ -717,7 +730,9 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             options.code.is_some(),
             &mut requested_effort,
             effective_policy,
-        )?;
+        );
+        store.save_auto_session(&session)?;
+        let action = action?;
         // Interactive hint/case calls print their own trailing statistics.
         llm_step_start = session.step_count();
         if let Some(context) = &mut session.context {
@@ -1092,6 +1107,7 @@ fn interaction(
                 ) {
                     println!("生成测试用例失败: {error}");
                 }
+                store.save_auto_session(session)?;
             }
             InteractiveCommand::Config => {
                 let target = config_path
@@ -1113,6 +1129,7 @@ fn interaction(
                 println!("未知命令「{value}」。输入 help 查看命令。")
             }
         }
+        store.save_auto_session(session)?;
     }
 }
 
@@ -1141,7 +1158,14 @@ fn generate_case_file(
     eprintln!("⏳ 正在调用模型生成测试用例…（输入 q 或 cancel 并回车可停止）");
     io::stderr().flush()?;
 
-    let response = match run_model_task(client, &messages, io::stdin().is_terminal()) {
+    let response = match run_recorded_model_task(
+        client,
+        &messages,
+        io::stdin().is_terminal(),
+        ModelTaskKind::TestGeneration,
+        session,
+        |_| {},
+    ) {
         ModelTaskOutcome::Completed(Ok(response)) => response,
         ModelTaskOutcome::Completed(Err(error)) => {
             eprintln!("✗ 模型生成失败");
@@ -1184,6 +1208,8 @@ fn generate_case_file(
             .build(),
     );
 
+    print_model_statistics(&session.steps[llm_step_start..]);
+    response.ensure_complete()?;
     let cases = pada::tools::test_gen::parse_test_cases(&response.content)?;
     let path = pada::tools::test_gen::save_generated_test_cases(problem_path, &cases)?;
     println!(
@@ -1192,7 +1218,6 @@ fn generate_case_file(
         path.display(),
         path.display()
     );
-    print_model_statistics(&session.steps[llm_step_start..]);
     Ok(())
 }
 
@@ -1386,7 +1411,9 @@ fn print_diagnostic_statistics(timings: &DiagnosticTimings, steps: &[SessionStep
             "│   {:<14} {:>10}",
             "Output Token", exchange.response.output_tokens
         );
+        print_response_details(&exchange.response);
     }
+    print_failed_model_statistics(steps);
     println!("│");
     println!(
         "│ {}  输入 {} / 输出 {} / 合计 {} / 成本 {:.6}",
@@ -1404,7 +1431,13 @@ fn print_model_statistics(steps: &[SessionStep]) {
         .iter()
         .filter_map(|step| step.llm_exchange.as_ref())
         .collect::<Vec<_>>();
-    if exchanges.is_empty() {
+    if exchanges.is_empty()
+        && !steps.iter().any(|step| {
+            step.tool_calls
+                .iter()
+                .any(|call| call.tool == "llm_failed_call")
+        })
+    {
         return;
     }
     let colored = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
@@ -1439,7 +1472,9 @@ fn print_model_statistics(steps: &[SessionStep]) {
             "│          Input {} / Output {} Token",
             exchange.response.input_tokens, exchange.response.output_tokens
         );
+        print_response_details(&exchange.response);
     }
+    print_failed_model_statistics(steps);
     println!(
         "│ {}  输入 {input} / 输出 {output} / 合计 {} / 成本 {:.6}",
         style("Token 合计", "1;33", colored),
@@ -1454,6 +1489,57 @@ fn format_ms(ms: u128) -> String {
         format!("{:.2} s", ms as f64 / 1_000.0)
     } else {
         format!("{ms} ms")
+    }
+}
+
+fn print_response_details(response: &pada::agent::llm::LlmResponse) {
+    let time = |value: Option<u64>| {
+        value
+            .map(|ms| format_ms(u128::from(ms)))
+            .unwrap_or_else(|| "未记录".into())
+    };
+    println!(
+        "│   首个响应事件 {} / 首个推理块 {}",
+        time(response.timings.api_first_event_ms),
+        time(response.timings.api_first_reasoning_ms)
+    );
+    println!(
+        "│   推理 Token {}（属于 Output，不重复计费）/ 结束原因 {}",
+        response
+            .details
+            .reasoning_tokens
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "API 未提供".into()),
+        response
+            .details
+            .finish_reason
+            .as_deref()
+            .unwrap_or("未提供")
+    );
+    if response.timings.json_fallback {
+        println!("│   服务返回完整 JSON，首段时间包含完整生成等待。");
+    }
+}
+
+fn print_failed_model_statistics(steps: &[SessionStep]) {
+    for call in steps
+        .iter()
+        .flat_map(|step| &step.tool_calls)
+        .filter(|call| call.tool == "llm_failed_call")
+    {
+        if let Ok(failure) =
+            serde_json::from_str::<pada::agent::model_task::FailedModelCall>(&call.output)
+        {
+            println!(
+                "│   模型{} / 耗时 {} / API 用量未知",
+                if failure.cancelled {
+                    "已取消"
+                } else {
+                    "失败"
+                },
+                format_ms(u128::from(failure.total_ms))
+            );
+        }
     }
 }
 
@@ -1721,6 +1807,7 @@ mod tests {
                 input_tokens: 20,
                 output_tokens: 8,
                 model: "mapping-model".into(),
+                details: Default::default(),
                 timings: Default::default(),
             })
         }

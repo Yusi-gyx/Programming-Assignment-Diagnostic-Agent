@@ -4,6 +4,20 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
+/// 调用用途只影响模型推理强度和输出上限，不改变测试、源码范围或调用预算。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ModelTaskKind {
+    #[default]
+    General,
+    KnowledgeMapping,
+    Hint(crate::models::HintLevel),
+    TestGeneration,
+    HintBatch {
+        level: crate::models::HintLevel,
+        count: usize,
+    },
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EffortMode {
@@ -168,7 +182,7 @@ impl EffortPolicy {
 
     pub fn summary(self) -> String {
         format!(
-            "{}：reasoning={}，模型调用≤{}，源码≤{} 文件/{}，测试={}，二次验证={} 次",
+            "{}：推理基准={}（按接口/任务适配），模型调用≤{}，源码≤{} 文件/{}，测试={}，二次验证={} 次",
             self.mode,
             self.reasoning_effort,
             self.max_model_calls,

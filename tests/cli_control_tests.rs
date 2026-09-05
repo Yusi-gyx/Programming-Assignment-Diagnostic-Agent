@@ -15,6 +15,89 @@ fn configure(store: &DataStore, endpoint: String) {
 }
 
 #[test]
+#[cfg(unix)]
+fn cancelling_model_wait_saves_elapsed_trace_without_partial_response() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = DataStore::new(temp.path().to_path_buf());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    configure(
+        &store,
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+    );
+    let problem = temp.path().join("problem.md");
+    std::fs::write(&problem, "所有权练习").unwrap();
+    let code = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/rust/ownership/e0382.rs");
+    let (connected, waiting) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        connected.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(10));
+        drop(socket);
+    });
+    let command = format!(
+        "\"{}\" --data-dir \"{}\" diagnose --problem \"{}\" --code \"{}\" --hint 3",
+        env!("CARGO_BIN_EXE_pada"),
+        temp.path().display(),
+        problem.display(),
+        code.display()
+    );
+    let mut child = Command::new("script")
+        .args(["-qec", &command, "/dev/null"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (prompt, ready) = mpsc::channel();
+    let output = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 1024];
+        loop {
+            let n = stdout.read(&mut buffer).unwrap();
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..n]);
+            if String::from_utf8_lossy(&bytes).contains("pada[3]>") {
+                let _ = prompt.send(());
+            }
+        }
+        bytes
+    });
+    waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+    let started = Instant::now();
+    writeln!(child.stdin.as_mut().unwrap(), "q").unwrap();
+    if ready.recv_timeout(Duration::from_secs(3)).is_err() {
+        let _ = child.kill();
+        let _ = release.send(());
+        panic!("model cancellation did not return to tutor");
+    }
+    assert!(started.elapsed() < Duration::from_secs(3));
+    writeln!(child.stdin.as_mut().unwrap(), "exit").unwrap();
+    assert!(child.wait().unwrap().success());
+    release.send(()).unwrap();
+    server.join().unwrap();
+    let output = String::from_utf8(output.join().unwrap()).unwrap();
+    assert!(output.contains("已取消"));
+    let sessions = store.recent_sessions().unwrap();
+    let session = &sessions[0].session;
+    let call = session
+        .steps
+        .iter()
+        .flat_map(|step| &step.tool_calls)
+        .find(|call| call.tool == "llm_failed_call")
+        .unwrap();
+    let failure: pada::agent::model_task::FailedModelCall =
+        serde_json::from_str(&call.output).unwrap();
+    assert!(failure.cancelled);
+    assert!(session.usage_records.is_empty());
+    assert!(session.steps.iter().all(|step| step.llm_exchange.is_none()));
+}
+
+#[test]
 fn resume_starts_at_one_without_any_model_request() {
     let temp = tempfile::tempdir().unwrap();
     let store = DataStore::new(temp.path().to_path_buf());

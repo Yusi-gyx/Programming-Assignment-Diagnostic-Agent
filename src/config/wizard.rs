@@ -1,6 +1,6 @@
 //! 导师模式中的交互式模型配置向导。
 
-use crate::config::model::{Config, ModelConfig, normalize_chat_endpoint};
+use crate::config::model::{Config, ModelConfig, ReasoningProtocol, normalize_chat_endpoint};
 use crate::error::{PadaError, Result};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -95,6 +95,7 @@ pub fn run_config_wizard<R: BufRead, W: Write>(
             config.save(path)?;
             let model = config.active()?.clone();
             writeln!(writer, "✓ 已切换到 profile「{name}」。")?;
+            writeln!(writer, "  {}", model.reasoning_notice())?;
             return Ok(Some(WizardResult {
                 path: path.to_owned(),
                 profile_name: name.clone(),
@@ -153,7 +154,16 @@ pub fn run_config_wizard<R: BufRead, W: Write>(
         return Err(PadaError::Config("模型名称不能为空".into()));
     }
     let context_length = prompt_parse(writer, reader, "上下文长度", preset.context_length)?;
+    writeln!(
+        writer,
+        "Reasoning 默认关闭；开启思考可能增加等待时间和 Token 费用，建议仅在复杂分析时开启。"
+    )?;
     let reasoning = prompt_bool(writer, reader, "启用 reasoning", false)?;
+    let reasoning_protocol = match preset_number {
+        1 => ReasoningProtocol::Deepseek,
+        2 => ReasoningProtocol::Ollama,
+        _ => prompt_reasoning_protocol(writer, reader)?,
+    };
     let input_price = prompt_parse(writer, reader, "输入价格/百万 Token", preset.input_price)?;
     let output_price = prompt_parse(writer, reader, "输出价格/百万 Token", preset.output_price)?;
     let model = ModelConfig {
@@ -162,6 +172,12 @@ pub fn run_config_wizard<R: BufRead, W: Write>(
         model_name,
         context_length,
         reasoning,
+        reasoning_protocol,
+        output_limits: config
+            .profiles
+            .get(&profile_name)
+            .map(|profile| profile.output_limits.clone())
+            .unwrap_or_default(),
         input_price,
         output_price,
     };
@@ -173,6 +189,7 @@ pub fn run_config_wizard<R: BufRead, W: Write>(
     writeln!(writer, "  API Key   : {}", mask_key(&model.api_key))?;
     writeln!(writer, "  Context   : {}", model.context_length)?;
     writeln!(writer, "  Reasoning : {}", model.reasoning)?;
+    writeln!(writer, "  {}", model.reasoning_notice())?;
     if !prompt_bool(writer, reader, "保存并立即启用", true)? {
         writeln!(writer, "已取消配置。")?;
         return Ok(None);
@@ -187,6 +204,29 @@ pub fn run_config_wizard<R: BufRead, W: Write>(
         profile_name,
         model,
     }))
+}
+
+fn prompt_reasoning_protocol<R: BufRead, W: Write>(
+    writer: &mut W,
+    reader: &mut R,
+) -> Result<ReasoningProtocol> {
+    writeln!(
+        writer,
+        "思考控制协议：auto 自动识别；deepseek；ollama；enable_thinking（百炼等支持此开关的模型）；compatible（旧兼容行为）。"
+    )?;
+    loop {
+        match prompt(writer, reader, "思考控制协议", "auto")?
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "auto" => return Ok(ReasoningProtocol::Auto),
+            "deepseek" => return Ok(ReasoningProtocol::Deepseek),
+            "ollama" => return Ok(ReasoningProtocol::Ollama),
+            "enable_thinking" => return Ok(ReasoningProtocol::EnableThinking),
+            "compatible" => return Ok(ReasoningProtocol::Compatible),
+            _ => writeln!(writer, "  请输入上述协议名称。")?,
+        }
+    }
 }
 
 fn prompt<R: BufRead, W: Write>(

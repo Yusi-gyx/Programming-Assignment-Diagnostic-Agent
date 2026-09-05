@@ -105,7 +105,11 @@ pada diagnose --problem problem.md --code main.rs --effort high
 | `xhigh` | 大范围跨文件上下文、最多 16 次模型调用并验证 1 次 |
 | `max` | 最完整上下文、最多 32 次模型调用并验证 2 次 |
 
-模型 profile 启用 `reasoning` 且接口兼容时，请求会同时使用该模式对应的 `reasoning_effort`。`max` 使用 `xhigh` reasoning effort，其额外深度来自更大源码范围、更多调用和两次验证。
+模型推理强度按接口和任务适配，独立于测试执行、源码范围及调用预算。官方 DeepSeek 接口在 `reasoning = false` 时显式关闭思考；开启时，知识点映射和三级提示始终使用 `low`，其余任务（包括生成测试及四五级提示）在 `low/medium` 下使用 `low`，`high/xhigh` 下使用 `high`，`max` 下使用原生 `max`。默认 `medium` 因而可以降低推理耗时并继续运行测试，无需切换到跳过测试的 `low`。
+
+Reasoning 在新配置及省略字段时默认关闭；已有显式 `reasoning = true` 的配置继续生效。配置向导会提醒开启思考可能增加等待时间及 Token 费用，启动时也显示设置和已知限制。
+
+`reasoning_protocol` 控制不同接口的参数适配，默认 `auto` 按 DeepSeek 官方主机或 Ollama 默认端口识别；代理、非标准端口和其他服务可手动指定。不会仅因模型同名而猜测协议。
 
 脚本或 CI 中可执行一次后退出：
 
@@ -332,11 +336,43 @@ output_price = 2.0
 | `api_key` | Bearer API Key；本地服务可留空 |
 | `model_name` | 请求体中的模型名称 |
 | `context_length` | 模型上下文长度配置 |
-| `reasoning` | 是否向兼容服务请求 reasoning；Ollama 默认端口不会发送该布尔扩展 |
+| `reasoning` | 是否请求开启思考，默认 `false`；实际支持取决于服务与模型 |
+| `reasoning_protocol` | 默认 `auto`；可选 `deepseek`、`ollama`、`enable_thinking`、`compatible` |
+| `output_limits` | 按任务配置输出 Token 上限，省略时使用下方默认值 |
 | `input_price` | 每百万输入 Token 的价格 |
 | `output_price` | 每百万输出 Token 的价格 |
 
 服务根地址会自动补全为 `/v1/chat/completions`，以 `/v1` 结尾的地址会补全 `/chat/completions`。已有完整地址会原样使用。
+
+| 思考协议 | `reasoning = false` | `reasoning = true` |
+|---|---|---|
+| `deepseek` | `thinking.type = disabled` | `thinking.type = enabled`，按任务适配强度 |
+| `ollama` | `reasoning_effort = none` | 使用 low/medium/high；知识点映射和三级提示使用 low |
+| `enable_thinking` | `enable_thinking = false` | `enable_thinking = true` |
+| `compatible` | 省略参数，不能保证服务端关闭思考 | 保留旧版 reasoning / reasoning_effort 扩展 |
+
+Ollama 的 [兼容接口](https://docs.ollama.com/api/openai-compatibility) 支持上述参数，需使用支持此协议的服务版本。GPT-OSS 无法完全关闭思考，因此关闭设置会改用 low 并显示提醒。[模型限制](https://docs.ollama.com/capabilities/thinking)
+
+百炼等支持 `enable_thinking` 的混合思考模型可在 profile 中设置 `reasoning_protocol = "enable_thinking"`。纯思考模型无法借此关闭推理，应选择支持切换的模型。[百炼思考模式说明](https://www.alibabacloud.com/help/en/model-studio/deep-thinking)
+
+自定义接口的配置向导提供协议选择；DeepSeek/Ollama 预设会保存对应协议，支持代理或非默认端口。未知接口使用 compatible 行为并显示提醒，不宣称已关闭服务端推理。
+
+每次调用都会设置输出上限。可在对应 profile 下按任务覆盖，例如：
+
+```toml
+[profiles.local.output_limits]
+mapping = 2048
+concept = 2048
+direction = 3072
+solution = 4096
+test_generation = 8192
+```
+
+上面是默认值；批量提示会按单项上限乘本批用例数量（最多 8）。推理模型可能把思考过程计入输出上限，复杂任务若提示“达到长度上限”，可提高对应值。被截断的结果不会作为完整提示缓存，也不会写成测试文件；已发生的 API 用量仍被记录。
+
+为减少等待，同一组知识点的三级讲解会复用；多个四五级失败用例的提示每批最多处理 8 项，并逐项校验编号。题目、源码和失败结果未变化时，知识点映射可命中缓存。每条错误的位置和测试证据仍保留在报告中。缓存仅在当前服务实例内有效，切换 profile 或 effort 后重建。
+
+调用统计现在区分首个响应事件、首个推理块和首段可见正文，并展示 API 提供的推理 Token（属于输出 Token，不重复计费）。服务返回完整 JSON 时会明确标记，不能据此单独推算推理时间。失败与取消也会保存等待时长；未取得完整 API 响应时，用量显示未知。
 
 API Key 以明文保存在 TOML 中，请限制配置文件权限，不要提交到版本控制。价格单位由用户自行统一，例如全部填写人民币或美元；PADA 只按同一单位计算数值，不做货币转换。
 

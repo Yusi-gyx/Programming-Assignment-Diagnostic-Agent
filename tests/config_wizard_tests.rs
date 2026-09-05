@@ -1,4 +1,4 @@
-use pada::config::model::Config;
+use pada::config::model::{Config, ReasoningProtocol};
 use pada::config::wizard::run_config_wizard;
 use std::io::Cursor;
 
@@ -28,6 +28,33 @@ fn wizard_creates_and_activates_a_profile() {
     let rendered = String::from_utf8(output).unwrap();
     assert!(rendered.contains("PADA 模型配置向导"));
     assert!(rendered.contains("配置已保存并启用"));
+    assert!(rendered.contains("可能增加等待时间和 Token 费用"));
+    assert_eq!(result.model.reasoning_protocol, ReasoningProtocol::Ollama);
+}
+
+#[test]
+fn wizard_defaults_reasoning_off_and_allows_custom_protocol() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.toml");
+    let input =
+        b"1\n3\nqwen\nhttps://proxy.example/v1\n\nqwen3\n\n\ninvalid\nenable_thinking\n\n\n\n";
+    let mut output = Vec::new();
+    let result = run_config_wizard(&mut Cursor::new(input), &mut output, &path)
+        .unwrap()
+        .unwrap();
+    assert!(!result.model.reasoning);
+    assert_eq!(
+        result.model.reasoning_protocol,
+        ReasoningProtocol::EnableThinking
+    );
+    assert_eq!(
+        Config::load(&path).unwrap().active().unwrap(),
+        &result.model
+    );
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("Reasoning 默认关闭"));
+    assert!(rendered.contains("请输入上述协议名称"));
+    assert!(rendered.contains("显式请求关闭"));
 }
 
 #[test]

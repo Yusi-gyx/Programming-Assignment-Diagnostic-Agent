@@ -95,6 +95,7 @@ impl ChatModel for CountingModel {
     fn chat(&self, _messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(LlmResponse {
+            details: Default::default(),
             timings: Default::default(),
             content: "诊断".into(),
             input_tokens: 1,

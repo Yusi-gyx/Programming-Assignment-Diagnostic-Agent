@@ -162,3 +162,63 @@ fn clients_reuse_http_socket_and_record_stream_usage() {
     }
     server.join().unwrap();
 }
+
+#[test]
+fn stream_metrics_separate_reasoning_from_visible_answer_and_keep_usage() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut config = pada::config::model::ModelConfig::local("mock", 8192);
+    config.endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    config.output_limits.concept = 333;
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = BufReader::new(socket.try_clone().unwrap());
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = n.trim().parse::<usize>().unwrap();
+            }
+        }
+        let mut request = vec![0; length];
+        reader.read_exact(&mut request).unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
+        assert_eq!(request["max_tokens"], 333);
+        let reasoning = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden\"}}]}\n\n";
+        let answer = "data: {\"choices\":[{\"delta\":{\"content\":\"visible\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":7,\"completion_tokens_details\":{\"reasoning_tokens\":5}}}\n\ndata: [DONE]\n\n";
+        write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",reasoning.len()+answer.len(),reasoning).unwrap();
+        socket.flush().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        socket.write_all(answer.as_bytes()).unwrap();
+    });
+    use pada::agent::llm::{ChatModel, ModelTaskKind};
+    let mut visible = String::new();
+    let response = LlmClient::new(config)
+        .chat_for_task(
+            &[],
+            ModelTaskKind::Hint(pada::models::HintLevel::Concept),
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut |chunk| visible.push_str(chunk),
+        )
+        .unwrap();
+    assert_eq!(visible, "visible");
+    assert_eq!(response.details.reasoning_tokens, Some(5));
+    assert_eq!(response.output_tokens, 7);
+    assert_eq!(
+        response.timings.api_first_reasoning_ms,
+        response.timings.api_first_event_ms
+    );
+    assert!(
+        response.timings.api_ttft_ms.unwrap() >= response.timings.api_first_reasoning_ms.unwrap()
+    );
+    assert!(response.timings.total_ms >= response.timings.api_ttft_ms.unwrap());
+    assert!(!response.timings.json_fallback);
+    assert!(response.ensure_complete().is_ok());
+    server.join().unwrap();
+}

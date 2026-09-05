@@ -22,6 +22,7 @@ fn make_config() -> ModelConfig {
 
 fn make_response() -> LlmResponse {
     LlmResponse {
+        details: Default::default(),
         timings: Default::default(),
         content: "这是一个所有权错误".into(),
         input_tokens: 100,

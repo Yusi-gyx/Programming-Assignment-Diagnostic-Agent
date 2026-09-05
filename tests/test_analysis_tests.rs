@@ -1,4 +1,4 @@
-use pada::agent::llm::{ChatMessage, ChatModel, LlmResponse};
+use pada::agent::llm::{ChatMessage, ChatModel, LlmResponse, ModelTaskKind};
 use pada::agent::test_analysis::{TestKnowledgeMapper, mapping_messages, parse_mapping_response};
 use pada::config::model::ModelConfig;
 use pada::history::Session;
@@ -60,9 +60,21 @@ fn ignores_thinking_json_before_the_real_mapping() {
 struct MappingModel;
 
 impl ChatModel for MappingModel {
+    fn chat_for_task(
+        &self,
+        messages: &[ChatMessage],
+        task: ModelTaskKind,
+        cancelled: &std::sync::atomic::AtomicBool,
+        on_chunk: &mut (dyn FnMut(&str) + Send),
+    ) -> pada::error::Result<LlmResponse> {
+        assert_eq!(task, ModelTaskKind::KnowledgeMapping);
+        self.chat_cancellable_streaming(messages, cancelled, on_chunk)
+    }
+
     fn chat(&self, messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
         assert!(messages[0].content.contains("只输出 JSON"));
         Ok(LlmResponse {
+            details: Default::default(),
             timings: Default::default(),
             content: r#"{"mappings":[{"index":0,"knowledge_points":["Iterator"]}]}"#.into(),
             input_tokens: 30,
@@ -77,6 +89,7 @@ struct InvalidMappingModel;
 impl ChatModel for InvalidMappingModel {
     fn chat(&self, _messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
         Ok(LlmResponse {
+            details: Default::default(),
             timings: Default::default(),
             content: r#"{"unexpected":true}"#.into(),
             input_tokens: 12,
