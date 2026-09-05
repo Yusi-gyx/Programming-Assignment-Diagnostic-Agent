@@ -7,6 +7,7 @@
 //! ```
 
 use pada::agent::llm::{ChatMessage, LlmResponse};
+use pada::config::effort::EffortMode;
 use pada::config::model::ModelConfig;
 use pada::history::{AgentDecision, LlmExchange, Session, StepBuilder, ToolCall};
 use pada::telemetry::UsageRecord;
@@ -21,6 +22,7 @@ fn make_config() -> ModelConfig {
 
 fn make_response() -> LlmResponse {
     LlmResponse {
+        timings: Default::default(),
         content: "这是一个所有权错误".into(),
         input_tokens: 100,
         output_tokens: 50,
@@ -230,6 +232,24 @@ fn test_old_session_without_resume_context_still_loads() {
     let loaded: Session = serde_json::from_value(value).unwrap();
     assert!(loaded.context.is_none());
     assert_eq!(loaded.title, "旧会话");
+}
+
+#[test]
+fn old_resume_context_defaults_to_medium_effort() {
+    let context: pada::history::SessionContext = serde_json::from_value(serde_json::json!({
+        "problem": "problem.md",
+        "code": "main.rs",
+        "project": null,
+        "tests": null,
+        "config": null,
+        "profile": null,
+        "memory": null,
+        "hint": 1,
+        "budget": null,
+        "generate_tests": false
+    }))
+    .unwrap();
+    assert_eq!(context.effort, EffortMode::Medium);
 }
 
 #[test]

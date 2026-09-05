@@ -1,7 +1,7 @@
 //! Runner / TestRunner 测试
 //!
 //! 验证程序运行与测试用例判定。
-//! 完成 `src/tools/runner.rs` 中 TODO 后运行：
+//! 可单独运行：
 //!
 //! ```bash
 //! cargo test --test runner_tests
@@ -27,6 +27,15 @@ fn compile_io_program(tag: &str) -> PathBuf {
     compiler
         .compile_file(&fixture("runner/io_program.rs"), Some(&out))
         .expect("编译 io_program 失败，请先实现 CompilerTool::compile_file");
+    out
+}
+
+fn compile_program(fixture_path: &str, tag: &str) -> PathBuf {
+    let compiler = CompilerTool::new();
+    let out = std::env::temp_dir().join(format!("pada_test_{tag}"));
+    compiler
+        .compile_file(&fixture(fixture_path), Some(&out))
+        .expect("编译运行器 fixture 失败");
     out
 }
 
@@ -100,6 +109,24 @@ fn test_run_tests_with_failure() {
     assert!(!results[1].passed, "错误用例应失败");
     assert_eq!(results[1].actual_output.trim(), "3");
     assert_eq!(results[1].expected_output, "100");
+}
+
+#[test]
+fn test_runtime_error_is_not_mixed_into_actual_stdout() {
+    let program = compile_program("runtime/panic.rs", "panic");
+    let results = TestRunner::new()
+        .run_tests(&program, &[TestCase::new("panic", "", "expected")])
+        .unwrap();
+
+    assert!(!results[0].passed);
+    assert_eq!(results[0].actual_output.trim(), "partial output");
+    assert!(
+        results[0]
+            .runtime_error
+            .as_deref()
+            .unwrap()
+            .contains("fixture panic")
+    );
 }
 
 #[test]

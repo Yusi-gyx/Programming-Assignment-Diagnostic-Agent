@@ -17,6 +17,7 @@ fn make_config() -> ModelConfig {
 
 fn make_response(input: usize, output: usize) -> LlmResponse {
     LlmResponse {
+        timings: Default::default(),
         content: "reply".into(),
         input_tokens: input,
         output_tokens: output,

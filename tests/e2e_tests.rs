@@ -150,7 +150,7 @@ fn test_full_workflow_compile_error() {
             .tool_call(ToolCall::new(
                 "parse_diagnostics",
                 "stderr",
-                &format!("{} 条诊断", diags.len()),
+                format!("{} 条诊断", diags.len()),
             ))
             .tool_call(ToolCall::new("classify", "E0382", "Ownership, 置信度 0.95"))
             .decision(AgentDecision::new("parsing", "映射到知识点 Ownership"))
@@ -231,6 +231,7 @@ fn test_full_workflow_token_budget() {
     for _ in 0..3 {
         assert!(tracker.check_budget(), "应在预算内");
         let resp = LlmResponse {
+            timings: Default::default(),
             content: "回复".into(),
             input_tokens: 80,
             output_tokens: 40,
@@ -245,6 +246,7 @@ fn test_full_workflow_token_budget() {
 
     // 第 4 次调用后累计 480 < 500
     let resp = LlmResponse {
+        timings: Default::default(),
         content: "回复".into(),
         input_tokens: 80,
         output_tokens: 40,
@@ -298,7 +300,7 @@ fn test_full_workflow_session_save_load_replay() {
             .tool_call(ToolCall::new(
                 "classify",
                 "E0382",
-                &format!("Ownership, 置信度 {:.2}", classified[0].confidence),
+                format!("Ownership, 置信度 {:.2}", classified[0].confidence),
             ))
             .decision(AgentDecision::new("parsing", "映射到 Ownership"))
             .build(),
@@ -431,7 +433,7 @@ fn test_report_follows_design_format() {
     assert!(text.contains("提示"), "应有提示行");
     // 位置格式 file:line:col
     assert!(
-        text.contains(":") && text.matches(':').count() >= 3,
+        text.contains(".rs:") && text.matches(':').count() >= 2,
         "应有 file:line:col 位置格式"
     );
 }

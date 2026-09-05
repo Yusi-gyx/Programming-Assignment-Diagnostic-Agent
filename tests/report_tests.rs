@@ -7,9 +7,9 @@
 //! ```
 
 use pada::analysis::error_parser::{RustcDiagnostic, Severity, SourceLocation};
-use pada::analysis::hint::{generate_compile_hint, generate_test_hint};
+use pada::analysis::hint::{generate_compile_hint, generate_test_hint, generate_test_result_hint};
 use pada::models::{Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult};
-use pada::report::{CompileReportEntry, DiagnosticReport, TestReportEntry};
+use pada::report::{CompileReportEntry, DiagnosticReport, TestReportEntry, format_test_run};
 
 // ============================================================
 // 辅助构造函数
@@ -47,6 +47,7 @@ fn make_test_result(name: &str, actual: &str, expected: &str) -> TestResult {
         passed: false,
         actual_output: actual.into(),
         expected_output: expected.into(),
+        runtime_error: None,
     }
 }
 
@@ -71,6 +72,16 @@ fn test_empty_report_markdown() {
     let md = report.to_markdown();
     assert!(md.contains("# 诊断报告"));
     assert!(md.contains("未发现问题") || md.contains("编译通过"));
+}
+
+#[test]
+fn test_empty_report_does_not_claim_unexecuted_tests_passed() {
+    let report = DiagnosticReport::new();
+    assert!(report.to_text_excluding(&[], &[]).contains("没有执行测试"));
+
+    let mut tested = DiagnosticReport::new();
+    tested.set_test_run(3, 3);
+    assert!(tested.to_text().contains("测试 3/3 通过"));
 }
 
 #[test]
@@ -186,7 +197,7 @@ fn multiline_model_hint_is_indented_in_text_and_block_formatted_in_markdown() {
     });
 
     let text = report.to_text();
-    assert!(text.contains("  提示   :\n    ### 问题原因"));
+    assert!(text.contains("  提示：\n    ### 问题原因"));
     assert!(text.contains("    ```rust"));
     assert!(
         report
@@ -241,6 +252,36 @@ fn test_test_failure_markdown_format() {
     assert!(md.contains("case_1"), "应有用例名");
     assert!(md.contains("**期望输出**"));
     assert!(md.contains("**实际输出**"));
+}
+
+#[test]
+fn test_run_summary_and_runtime_error_are_visible() {
+    let result = TestResult {
+        name: "panic_case".into(),
+        passed: false,
+        actual_output: "partial".into(),
+        expected_output: "complete".into(),
+        runtime_error: Some("panicked at fixture".into()),
+    };
+    let classified = Diagnostic {
+        category: ErrorCategory::RuntimeError,
+        knowledge_points: vec![KnowledgePoint::ErrorHandling],
+        confidence: 0.9,
+    };
+    let hint = generate_test_result_hint(&result, &classified, HintLevel::Category);
+    let mut report = DiagnosticReport::new();
+    report.add_test(TestReportEntry {
+        result: result.clone(),
+        classified,
+        hint,
+    });
+
+    let summary = format_test_run(&[result], false);
+    assert!(summary.contains("测试结果"));
+    assert!(summary.contains("panicked at fixture"));
+    let text = report.to_text();
+    assert!(text.contains("[运行时错误]"));
+    assert!(text.contains("程序未正常退出"));
 }
 
 #[test]
@@ -400,4 +441,50 @@ fn colored_report_marks_errors_knowledge_and_hints() {
     assert!(colored.contains("\x1b[31;1m[编译错误]"));
     assert!(colored.contains("\x1b[33m  知识点"));
     assert!(colored.contains("\x1b[34;1m  提示"));
+}
+
+#[test]
+fn streamed_entry_prefix_and_remaining_report_do_not_duplicate_content() {
+    let diag = make_diag(Some("E0382"), Some(make_loc()));
+    let classified = make_classified(vec![KnowledgePoint::Ownership]);
+    let hint = generate_compile_hint(&diag, &classified, HintLevel::Concept);
+    let mut report = DiagnosticReport::new();
+    report.add_compile(CompileReportEntry {
+        diag,
+        classified,
+        hint,
+    });
+
+    let prefix = report.compile_stream_prefix(0, false);
+    let remaining = report.to_text_excluding(&[0], &[]);
+    assert!(prefix.contains("[编译错误]"));
+    assert!(prefix.ends_with("提示：\n"));
+    assert!(remaining.is_empty());
+    assert_eq!(format!("{prefix}STREAMED").matches("STREAMED").count(), 1);
+}
+
+#[test]
+fn streamed_test_hint_starts_on_the_line_after_its_label() {
+    let result = make_test_result("reverse", "1 2 3", "3 2 1");
+    let mut report = DiagnosticReport::new();
+    report.add_test(TestReportEntry {
+        classified: Diagnostic {
+            category: ErrorCategory::LogicError,
+            knowledge_points: vec![KnowledgePoint::Iterator],
+            confidence: 0.7,
+        },
+        hint: generate_test_result_hint(
+            &result,
+            &Diagnostic {
+                category: ErrorCategory::LogicError,
+                knowledge_points: vec![KnowledgePoint::Iterator],
+                confidence: 0.7,
+            },
+            HintLevel::Concept,
+        ),
+        result,
+    });
+
+    assert!(report.test_stream_prefix(0, false).ends_with("提示：\n"));
+    assert!(report.test_stream_prefix(0, true).ends_with("\x1b[0m\n"));
 }

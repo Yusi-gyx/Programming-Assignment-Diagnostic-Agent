@@ -12,6 +12,7 @@ use pada::agent::llm::{
     parse_stream_response, test_hint_messages, test_solution_messages,
 };
 use pada::analysis::error_parser::{RustcDiagnostic, Severity};
+use pada::config::effort::{EffortMode, EffortPolicy};
 use pada::config::model::ModelConfig;
 use pada::models::{Assignment, Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult};
 use serde_json::json;
@@ -95,6 +96,23 @@ fn test_cloud_request_includes_reasoning_when_enabled() {
     let body = client.build_request_body(&[ChatMessage::user("test")]);
 
     assert_eq!(body["reasoning"], true);
+    assert_eq!(body["reasoning_effort"], "medium");
+}
+
+#[test]
+fn test_runtime_effort_is_sent_when_reasoning_is_supported() {
+    let mut config = ModelConfig::cloud(
+        "https://api.example.com/v1/chat/completions",
+        "key",
+        "reasoner",
+        8192,
+        0.0,
+        0.0,
+    );
+    config.reasoning = true;
+    let client = LlmClient::with_effort(config, EffortPolicy::for_mode(EffortMode::High));
+    let body = client.build_request_body(&[ChatMessage::user("test")]);
+    assert_eq!(body["reasoning_effort"], "high");
 }
 
 #[test]
@@ -264,12 +282,14 @@ fn test_client_config_access() {
 #[test]
 fn test_llm_response_eq() {
     let r1 = LlmResponse {
+        timings: Default::default(),
         content: "hello".into(),
         input_tokens: 10,
         output_tokens: 5,
         model: "m".into(),
     };
     let r2 = LlmResponse {
+        timings: Default::default(),
         content: "hello".into(),
         input_tokens: 10,
         output_tokens: 5,
@@ -313,6 +333,7 @@ fn level_five_prompts_include_real_diagnostic_context() {
         passed: false,
         actual_output: "1".into(),
         expected_output: "0".into(),
+        runtime_error: None,
     };
     let messages = test_solution_messages(&assignment, "fn main() {}", &failed, "画像");
     assert!(messages[1].content.contains("empty"));
@@ -363,6 +384,7 @@ fn level_four_test_prompt_requires_classic_error_pattern() {
         passed: false,
         actual_output: "9".into(),
         expected_output: "6".into(),
+        runtime_error: None,
     };
     let classified = Diagnostic {
         category: ErrorCategory::LogicError,

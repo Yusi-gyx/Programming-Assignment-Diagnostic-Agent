@@ -1,6 +1,6 @@
 //! 分层提示测试
 //!
-//! 完成 `src/analysis/hint.rs` 中 TODO 后运行：
+//! 可单独运行：
 //!
 //! ```bash
 //! cargo test --test hint_tests

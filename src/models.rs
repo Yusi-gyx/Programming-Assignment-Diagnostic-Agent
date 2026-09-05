@@ -48,6 +48,9 @@ pub struct TestResult {
     pub actual_output: String,
     /// 期望输出（用于诊断展示）
     pub expected_output: String,
+    /// 程序未正常退出或运行器失败时的错误信息。
+    #[serde(default)]
+    pub runtime_error: Option<String>,
 }
 
 // ============================================================
@@ -89,6 +92,9 @@ pub enum ErrorCategory {
 /// 是分层提示与学习进度记忆的基础。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KnowledgePoint {
+    TypeSystem,
+    Syntax,
+    NameResolution,
     Ownership,
     Borrowing,
     Lifetime,

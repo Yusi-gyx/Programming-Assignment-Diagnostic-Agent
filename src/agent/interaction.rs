@@ -12,6 +12,7 @@ pub enum InteractiveCommand {
     Progress,
     Feedback(bool),
     Config,
+    Effort(Option<String>),
     Tests(Option<String>),
     Case,
     Save(Option<String>),
@@ -32,6 +33,7 @@ pub fn parse_command(input: &str) -> InteractiveCommand {
         "understood" | "懂了" => InteractiveCommand::Feedback(true),
         "notyet" | "还不会" => InteractiveCommand::Feedback(false),
         "\\config" | "config" => InteractiveCommand::Config,
+        "\\effort" | "effort" => InteractiveCommand::Effort(parts.next().map(str::to_owned)),
         "\\test" | "\\tests" | "test" | "tests" => {
             InteractiveCommand::Tests(parts.next().map(str::to_owned))
         }
@@ -53,6 +55,11 @@ pub fn hint_number(level: HintLevel) -> u8 {
     }
 }
 
+/// 新测试属于一轮新证据，必须从确定性的 Level 1 开始展示。
+pub fn reset_hint_for_new_tests(level: &mut HintLevel) {
+    *level = HintLevel::Category;
+}
+
 pub fn help_text() -> &'static str {
-    "命令: next  hint [1-5]  recheck  show  test <文件>  case  progress  understood/notyet  usage  config  save [文件]  help  exit"
+    "命令: next  hint [1-5]  effort [模式]  recheck  show  test <文件>  case  progress  understood/notyet  usage  config  save [文件]  help  exit"
 }

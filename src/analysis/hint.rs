@@ -21,7 +21,7 @@
 //! | 5    | Solution | 参考方案            |
 
 use crate::analysis::error_parser::{RustcDiagnostic, SourceLocation};
-use crate::models::{Diagnostic, ErrorCategory, HintLevel, KnowledgePoint};
+use crate::models::{Diagnostic, ErrorCategory, HintLevel, KnowledgePoint, TestResult};
 
 // ============================================================
 // 提示级别控制（已实现，供上层调用）
@@ -101,6 +101,9 @@ pub fn error_category_text(category: ErrorCategory) -> &'static str {
 /// 将知识点转为中文描述（供 Level 3 使用）。
 pub fn knowledge_point_text(point: KnowledgePoint) -> &'static str {
     match point {
+        KnowledgePoint::TypeSystem => "类型系统 / TypeSystem",
+        KnowledgePoint::Syntax => "语法 / Syntax",
+        KnowledgePoint::NameResolution => "名称解析与模块 / NameResolution",
         KnowledgePoint::Ownership => "所有权 / Move",
         KnowledgePoint::Borrowing => "借用 / Borrow",
         KnowledgePoint::Lifetime => "生命周期 / Lifetime",
@@ -122,7 +125,7 @@ pub fn format_location(loc: &SourceLocation) -> String {
 }
 
 // ============================================================
-// 编译错误提示（核心逻辑，TODO）
+// 编译错误提示
 // ============================================================
 
 /// 为编译诊断生成指定级别的提示。
@@ -138,38 +141,6 @@ pub fn generate_compile_hint(
     classified: &Diagnostic,
     level: HintLevel,
 ) -> Hint {
-    // TODO: 实现编译诊断分层提示
-    //
-    // 建议步骤：按 level 分支
-    //
-    // HintLevel::Category =>
-    //   Hint::new(level, format!("这是一个{}", error_category_text(classified.category)))
-    //
-    // HintLevel::Location =>
-    //   match &diag.location {
-    //       Some(loc) => Hint::new(level, format!("位置：{}", format_location(loc))),
-    //       None => Hint::new(level, "位置信息缺失".to_string()),
-    //   }
-    //
-    // HintLevel::Concept =>
-    //   if classified.knowledge_points.is_empty() {
-    //       Hint::new(level, "知识点待分析（无明确映射）".to_string())
-    //   } else {
-    //       let kps: Vec<_> = classified.knowledge_points
-    //           .iter().map(|k| knowledge_point_text(*k)).collect();
-    //       Hint::new(level, format!("知识点：{}", kps.join("、")))
-    //   }
-    //
-    // HintLevel::Direction =>
-    //   match &diag.code {
-    //       Some(code) => match code_to_direction(code) {
-    //           Some(dir) => Hint::new(level, format!("修改方向：{}", dir)),
-    //           None => Hint::new(level, "修改方向待分析".to_string()),
-    //       },
-    //       None => Hint::new(level, "修改方向待分析（无错误码）".to_string()),
-    //   }
-    //
-    // HintLevel::Solution => 返回模型配置指引；配置模型后由 SolutionHintService 替换
     match &level {
         HintLevel::Category => Hint::new(
             level,
@@ -206,7 +177,7 @@ pub fn generate_compile_hint(
 }
 
 // ============================================================
-// 测试失败提示（核心逻辑，TODO）
+// 测试失败提示
 // ============================================================
 
 /// 为测试失败生成指定级别的提示。
@@ -228,24 +199,6 @@ pub fn generate_test_hint_with_points(
     level: HintLevel,
     points: &[KnowledgePoint],
 ) -> Hint {
-    // TODO: 实现测试失败分层提示
-    //
-    // 建议步骤：按 level 分支
-    //
-    // HintLevel::Category =>
-    //   Hint::new(level, "这是一个逻辑错误（测试未通过）")
-    //
-    // HintLevel::Location =>
-    //   Hint::new(level, format!("失败的测试用例：{}", name))
-    //
-    // HintLevel::Concept =>
-    //   Hint::new(level, "知识点待分析（需结合代码与题目判断）")
-    //
-    // HintLevel::Direction =>
-    //   Hint::new(level,
-    //     format!("输入对应期望输出为「{}」，但实际输出「{}」", expected.trim(), actual.trim()))
-    //
-    // HintLevel::Solution => 返回模型配置指引；配置模型后由 SolutionHintService 替换
     match &level {
         HintLevel::Category => Hint::new(level, "这是一个逻辑错误（测试未通过）".to_string()),
         HintLevel::Location => Hint::new(level, format!("失败的测试用例： {}", name)),
@@ -281,8 +234,69 @@ pub fn generate_test_hint_with_points(
     }
 }
 
+/// 使用完整执行结果生成提示，使 panic/异常退出不会被误报为逻辑错误。
+pub fn generate_test_result_hint(
+    result: &TestResult,
+    classified: &Diagnostic,
+    level: HintLevel,
+) -> Hint {
+    match level {
+        HintLevel::Category => Hint::new(
+            level,
+            if classified.category == ErrorCategory::RuntimeError {
+                "这是一个运行时错误（程序未正常退出）"
+            } else {
+                "这是一个逻辑错误（测试未通过）"
+            },
+        ),
+        HintLevel::Location => Hint::new(level, format!("失败的测试用例：{}", result.name)),
+        HintLevel::Concept => {
+            if classified.knowledge_points.is_empty() {
+                Hint::new(level, "知识点待分析（配置 LLM 后自动映射）")
+            } else {
+                Hint::new(
+                    level,
+                    format!(
+                        "知识点：{}",
+                        classified
+                            .knowledge_points
+                            .iter()
+                            .map(|point| knowledge_point_text(*point))
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    ),
+                )
+            }
+        }
+        HintLevel::Direction => {
+            if let Some(error) = &result.runtime_error {
+                Hint::new(
+                    level,
+                    format!(
+                        "程序未正常退出；先根据运行错误定位 panic 或异常路径：{}",
+                        error.trim()
+                    ),
+                )
+            } else {
+                Hint::new(
+                    level,
+                    format!(
+                        "输入对应期望输出为「{}」，但实际输出为「{}」",
+                        result.expected_output.trim(),
+                        result.actual_output.trim()
+                    ),
+                )
+            }
+        }
+        HintLevel::Solution => Hint::new(
+            level,
+            "尚未配置 LLM，无法生成参考方案。请在导师模式输入 config 配置模型。",
+        ),
+    }
+}
+
 // ============================================================
-// 错误码 → 修改方向（核心逻辑，TODO）
+// 错误码 → 修改方向
 // ============================================================
 
 /// 将 rustc 错误码映射到通用修改方向。
@@ -301,25 +315,31 @@ pub fn generate_test_hint_with_points(
 /// | E0597 | 检查被引用数据的生命周期是否足够长 |
 /// | E0277 | 为类型实现所需 trait 或调整 trait bound |
 pub fn code_to_direction(code: &str) -> Option<&'static str> {
-    // TODO: 实现错误码到修改方向的映射
-    //
-    // 建议步骤：
-    //   match code {
-    //       "E0382" => Some("在移动值之前克隆，或重新设计所有权结构"),
-    //       "E0499" => Some("确保同一时间只有一个可变借用"),
-    //       "E0502" => Some("避免同时存在可变与不可变借用"),
-    //       "E0106" => Some("为引用参数添加生命周期标注"),
-    //       "E0597" => Some("检查被引用数据的生命周期是否足够长"),
-    //       "E0277" => Some("为类型实现所需 trait 或调整 trait bound"),
-    //       _ => None,
-    //   }
     match code {
+        "E0308" => Some("核对表达式的期望类型与实际类型，并在数据产生处统一类型"),
+        "E0282" | "E0284" | "E0283" => Some("补充必要的类型标注或泛型参数，消除类型推断歧义"),
+        "E0605" | "E0606" => Some("使用该类型支持的显式转换方式，避免无效的 as 转换"),
+        "E0369" | "E0271" => Some("检查运算两侧或关联类型是否满足相同的类型约束"),
+        "E0425" | "E0412" => Some("检查名称拼写、定义位置和当前作用域中的导入"),
+        "E0432" | "E0433" | "E0583" | "E0603" => {
+            Some("检查模块路径、mod 声明、use 导入以及条目的可见性")
+        }
+        "E0599" | "E0046" | "E0119" | "E0404" => {
+            Some("检查 Trait 实现、约束和方法可用条件是否完整且无冲突")
+        }
+        "E0004" | "E0005" => Some("补全模式分支，并确保模式覆盖所有可能值"),
+        "E0107" | "E0207" | "E0243" => Some("核对泛型参数数量、声明位置和实际约束"),
+        "E0515" | "E0716" => Some("避免返回或长期借用临时值，延长所有者的有效作用域"),
+        "E0596" | "E0506" => Some("检查绑定的可变性，并在赋值前结束冲突的借用"),
         "E0382" => Some("在移动值之前克隆，或重新设计所有权结构"),
+        "E0507" => Some("不要从借用内容中直接移出值；可借用、复制或显式克隆"),
+        "E0505" | "E0500" => Some("调整所有权转移时机，使现有借用先结束"),
         "E0499" => Some("确保同一时间只有一个可变借用"),
         "E0502" => Some("避免同时存在可变与不可变借用"),
         "E0106" => Some("为引用参数添加生命周期标注"),
         "E0597" => Some("检查被引用数据的生命周期是否足够长"),
         "E0277" => Some("为类型实现所需 trait 或调整 trait bound"),
+        "E0554" => Some("移除稳定版不支持的 feature 属性，或改用稳定语言能力"),
         _ => None,
     }
 }

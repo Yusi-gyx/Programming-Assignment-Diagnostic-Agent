@@ -20,6 +20,7 @@
 //! 保存为 JSON 文件，格式参见 [`Session`] 的序列化。
 
 use crate::agent::llm::{ChatMessage, LlmResponse};
+use crate::config::effort::EffortMode;
 use crate::telemetry::UsageRecord;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -150,6 +151,8 @@ pub struct SessionContext {
     pub hint: u8,
     pub budget: Option<usize>,
     pub generate_tests: bool,
+    #[serde(default)]
+    pub effort: EffortMode,
 }
 
 impl Session {
@@ -209,13 +212,99 @@ impl Session {
     /// 生成会话摘要（用于历史列表）。
     pub fn summary(&self) -> String {
         format!(
-            "[{}] {} ({} 步, {} 条用量记录, 创建于 {})",
+            "[{}] {} ({} 步, {} 条用量记录, 创建于 {})\n{}",
             self.id,
             self.title,
             self.step_count(),
             self.usage_records.len(),
-            self.created_at
+            self.created_at,
+            self.problem_summary()
         )
+    }
+
+    pub fn problem_summary(&self) -> String {
+        let path = self
+            .context
+            .as_ref()
+            .map(|c| c.problem.display().to_string())
+            .unwrap_or_else(|| "旧版记录未保存题目路径".into());
+        let description = self
+            .steps
+            .iter()
+            .find(|step| step.decisions.iter().any(|d| d.stage == "reading_input"))
+            .and_then(|step| step.user_input.as_deref())
+            .unwrap_or("旧版记录未保存题目描述");
+        let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+        let preview: String = description.chars().take(240).collect();
+        format!(
+            "题目位置: {path}\n题目描述: {preview}{}",
+            if description.chars().count() > 240 {
+                "…"
+            } else {
+                ""
+            }
+        )
+    }
+
+    pub fn problem_path_text(&self) -> String {
+        self.context
+            .as_ref()
+            .map(|context| context.problem.display().to_string())
+            .unwrap_or_else(|| "旧版记录未保存".into())
+    }
+
+    pub fn submission_path_text(&self) -> String {
+        self.context
+            .as_ref()
+            .and_then(|context| context.code.as_ref().or(context.project.as_ref()))
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "旧版记录未保存".into())
+    }
+
+    pub fn description_preview(&self, limit: usize) -> String {
+        let description = self
+            .steps
+            .iter()
+            .find(|step| {
+                step.decisions
+                    .iter()
+                    .any(|decision| decision.stage == "reading_input")
+            })
+            .and_then(|step| step.user_input.as_deref())
+            .unwrap_or("旧版记录未保存题目描述");
+        let normalized = description.split_whitespace().collect::<Vec<_>>().join(" ");
+        let preview = normalized.chars().take(limit).collect::<String>();
+        if normalized.chars().count() > limit {
+            format!("{preview}…")
+        } else {
+            preview
+        }
+    }
+
+    pub fn display_title(&self) -> String {
+        if !matches!(
+            self.title.trim().to_ascii_lowercase().as_str(),
+            "problem" | "题目" | "未命名题目"
+        ) {
+            return self.title.clone();
+        }
+        self.steps
+            .iter()
+            .find(|step| {
+                step.decisions
+                    .iter()
+                    .any(|decision| decision.stage == "reading_input")
+            })
+            .and_then(|step| step.user_input.as_deref())
+            .and_then(|description| {
+                description
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+            })
+            .map(|line| line.trim_start_matches('#').trim().to_owned())
+            .filter(|line| !line.is_empty())
+            .unwrap_or_else(|| self.title.clone())
     }
 }
 

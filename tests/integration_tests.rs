@@ -22,7 +22,7 @@ fn fixture(relative: &str) -> PathBuf {
 
 #[test]
 fn test_data_structures_basic_usage() {
-    // 验证核心数据结构能正常构造与使用（不依赖任何 TODO 实现）
+    // 验证核心数据结构能正常构造与使用
     let assignment = Assignment {
         title: "求和".into(),
         description: "读取整数并求和".into(),

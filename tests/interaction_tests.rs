@@ -13,6 +13,11 @@ fn parses_friendly_and_backslash_commands() {
     assert_eq!(parse_command("progress"), InteractiveCommand::Progress);
     assert_eq!(parse_command("config"), InteractiveCommand::Config);
     assert_eq!(
+        parse_command("effort xhigh"),
+        InteractiveCommand::Effort(Some("xhigh".into()))
+    );
+    assert_eq!(parse_command("effort"), InteractiveCommand::Effort(None));
+    assert_eq!(
         parse_command("test cases.json"),
         InteractiveCommand::Tests(Some("cases.json".into()))
     );

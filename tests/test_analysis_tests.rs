@@ -11,6 +11,7 @@ fn failure(name: &str) -> TestResult {
         passed: false,
         actual_output: "1 2 3".into(),
         expected_output: "3 2 1".into(),
+        runtime_error: None,
     }
 }
 
@@ -44,12 +45,25 @@ fn parses_top_level_array_returned_by_local_models() {
     );
 }
 
+#[test]
+fn ignores_thinking_json_before_the_real_mapping() {
+    let failures = vec![failure("normal")];
+    let response = r#"<think>{"draft":true}</think>
+说明文字 [不是结果]
+```json
+{"mappings":[{"index":0,"knowledge_points":["TypeSystem"]}]}
+```"#;
+    let mapped = parse_mapping_response(response, &failures).unwrap();
+    assert_eq!(mapped[0].knowledge_points, vec![KnowledgePoint::TypeSystem]);
+}
+
 struct MappingModel;
 
 impl ChatModel for MappingModel {
     fn chat(&self, messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
         assert!(messages[0].content.contains("只输出 JSON"));
         Ok(LlmResponse {
+            timings: Default::default(),
             content: r#"{"mappings":[{"index":0,"knowledge_points":["Iterator"]}]}"#.into(),
             input_tokens: 30,
             output_tokens: 10,
@@ -63,6 +77,7 @@ struct InvalidMappingModel;
 impl ChatModel for InvalidMappingModel {
     fn chat(&self, _messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
         Ok(LlmResponse {
+            timings: Default::default(),
             content: r#"{"unexpected":true}"#.into(),
             input_tokens: 12,
             output_tokens: 3,

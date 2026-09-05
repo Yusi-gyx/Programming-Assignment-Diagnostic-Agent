@@ -1,7 +1,7 @@
 //! CompilerTool 测试
 //!
 //! 验证编译工具能正确调用 rustc 并捕获输出。
-//! 完成 `src/tools/compiler.rs` 中 TODO 后运行：
+//! 可单独运行：
 //!
 //! ```bash
 //! cargo test --test compiler_tests
@@ -61,6 +61,22 @@ fn test_compile_borrowing_error() {
     assert!(
         output.stderr.contains("E0499") || output.stderr.contains("E0502"),
         "stderr 应包含借用冲突错误码，实际输出:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn test_cargo_check_multifile_project_with_type_error() {
+    // 完整 Cargo 项目的错误位于独立模块中，应由 cargo check 捕获。
+    let compiler = CompilerTool::new();
+    let output = compiler
+        .cargo_check(&fixture("cargo/type_mismatch_project"))
+        .expect("cargo check 调用不应返回 IO 错误");
+
+    assert!(!output.success, "有类型错误的 Cargo 项目应检查失败");
+    assert!(
+        output.stderr.contains("E0308") && output.stderr.contains("src/grade.rs"),
+        "stderr 应包含 grade.rs 中的 E0308，实际输出:\n{}",
         output.stderr
     );
 }

@@ -1,8 +1,11 @@
 //! Level 3-5 模型增强提示生成、格式清理与会话记录。
 
-use crate::agent::llm::{ChatModel, LlmClient, compile_hint_messages, test_hint_messages};
-use crate::agent::model_task::{ModelTaskOutcome, run_model_task};
+use crate::agent::llm::{
+    ChatModel, LlmClient, compile_hint_messages_with_policy, test_hint_messages,
+};
+use crate::agent::model_task::{ModelTaskOutcome, run_model_task_streaming};
 use crate::analysis::hint::Hint;
+use crate::config::effort::{EffortMode, EffortPolicy, ModelCallBudget};
 use crate::config::model::ModelConfig;
 use crate::history::{AgentDecision, LlmExchange, Session, StepBuilder};
 use crate::memory::{KnowledgeProfile, now_timestamp};
@@ -10,32 +13,54 @@ use crate::models::{Assignment, HintLevel};
 use crate::report::DiagnosticReport;
 use crate::telemetry::{UsageRecord, UsageTracker};
 use std::collections::HashMap;
+use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 
 pub struct SolutionHintService {
     config: Option<ModelConfig>,
     model: Option<Arc<dyn ChatModel>>,
     cache: HashMap<String, String>,
+    policy: EffortPolicy,
+}
+
+#[derive(Debug, Default)]
+pub struct StreamedReportEntries {
+    pub compile: Vec<usize>,
+    pub tests: Vec<usize>,
 }
 
 impl SolutionHintService {
     pub fn new(config: Option<ModelConfig>) -> Self {
-        let model = config
-            .as_ref()
-            .map(|config| Arc::new(LlmClient::new(config.clone())) as Arc<dyn ChatModel>);
+        Self::with_effort(config, EffortPolicy::for_mode(EffortMode::Medium))
+    }
+
+    pub fn with_effort(config: Option<ModelConfig>, policy: EffortPolicy) -> Self {
+        let model = config.as_ref().map(|config| {
+            Arc::new(LlmClient::with_effort(config.clone(), policy)) as Arc<dyn ChatModel>
+        });
         Self {
             config,
             model,
             cache: HashMap::new(),
+            policy,
         }
     }
 
     /// 注入模型实现，供离线测试或其他兼容后端使用。
     pub fn with_model(config: ModelConfig, model: Box<dyn ChatModel>) -> Self {
+        Self::with_model_and_effort(config, model, EffortPolicy::for_mode(EffortMode::Medium))
+    }
+
+    pub fn with_model_and_effort(
+        config: ModelConfig,
+        model: Box<dyn ChatModel>,
+        policy: EffortPolicy,
+    ) -> Self {
         Self {
             config: Some(config),
             model: Some(Arc::from(model)),
             cache: HashMap::new(),
+            policy,
         }
     }
 
@@ -49,7 +74,33 @@ impl SolutionHintService {
         tracker: &mut UsageTracker,
         session: &mut Session,
         interactive: bool,
-    ) {
+    ) -> StreamedReportEntries {
+        let mut budget = ModelCallBudget::new(self.policy);
+        self.enrich_with_budget(
+            report,
+            assignment,
+            source_context,
+            knowledge,
+            tracker,
+            session,
+            interactive,
+            &mut budget,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn enrich_with_budget(
+        &mut self,
+        report: &mut DiagnosticReport,
+        assignment: &Assignment,
+        source_context: &str,
+        knowledge: &KnowledgeProfile,
+        tracker: &mut UsageTracker,
+        session: &mut Session,
+        interactive: bool,
+        call_budget: &mut ModelCallBudget,
+    ) -> StreamedReportEntries {
+        let mut streamed = StreamedReportEntries::default();
         let needs_model_hint = report
             .compile_entries
             .iter()
@@ -59,10 +110,10 @@ impl SolutionHintService {
                 .iter()
                 .any(|entry| model_enriches(entry.hint.level));
         if !needs_model_hint {
-            return;
+            return streamed;
         }
         let (Some(config), Some(model)) = (self.config.as_ref(), self.model.as_ref()) else {
-            return;
+            return streamed;
         };
         let profile_summary = knowledge.prompt_summary_at(now_timestamp());
         let total = report
@@ -76,8 +127,15 @@ impl SolutionHintService {
                 .filter(|entry| model_enriches(entry.hint.level))
                 .count();
         let mut current = 0;
+        let colored = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        let compile_prefixes = (0..report.compile_entries.len())
+            .map(|index| report.compile_stream_prefix(index, colored))
+            .collect::<Vec<_>>();
+        let test_prefixes = (0..report.test_entries.len())
+            .map(|index| report.test_stream_prefix(index, colored))
+            .collect::<Vec<_>>();
 
-        for entry in &mut report.compile_entries {
+        for (index, entry) in report.compile_entries.iter_mut().enumerate() {
             let level = entry.hint.level;
             if !model_enriches(level) {
                 continue;
@@ -100,7 +158,11 @@ impl SolutionHintService {
                 }
                 continue;
             }
-            let messages = compile_hint_messages(
+            if !call_budget.try_take() {
+                entry.hint = call_limit_hint(level, self.policy.max_model_calls);
+                continue;
+            }
+            let messages = compile_hint_messages_with_policy(
                 assignment,
                 source_context,
                 &entry.diag,
@@ -108,10 +170,22 @@ impl SolutionHintService {
                 level,
                 &entry.hint.content,
                 &profile_summary,
+                self.policy,
             );
             model_call_started(level, current, total, interactive);
-            match run_model_task(Arc::clone(model), &messages, interactive) {
+            print!("\n{}", compile_prefixes[index]);
+            let _ = io::stdout().flush();
+            streamed.compile.push(index);
+            match run_model_task_streaming(Arc::clone(model), &messages, interactive, |chunk| {
+                if colored {
+                    print!("\x1b[34m{chunk}\x1b[0m");
+                } else {
+                    print!("{chunk}");
+                }
+                let _ = io::stdout().flush();
+            }) {
                 ModelTaskOutcome::Completed(Ok(response)) => {
+                    println!();
                     record_exchange(
                         session,
                         tracker,
@@ -127,33 +201,36 @@ impl SolutionHintService {
                     model_call_finished(current, total);
                 }
                 ModelTaskOutcome::Completed(Err(error)) => {
+                    println!("模型生成失败：{error}");
                     model_call_failed(current, total, &error);
                     if level == HintLevel::Solution {
                         entry.hint = failed_hint(error);
                     }
                 }
                 ModelTaskOutcome::Cancelled => {
+                    println!("模型生成已取消。");
                     model_call_cancelled(current, total);
                     if level == HintLevel::Solution {
                         entry.hint = cancelled_hint();
                     }
-                    return;
+                    return streamed;
                 }
             }
         }
 
-        for entry in &mut report.test_entries {
+        for (index, entry) in report.test_entries.iter_mut().enumerate() {
             let level = entry.hint.level;
             if !model_enriches(level) {
                 continue;
             }
             current += 1;
             let key = format!(
-                "test:{level:?}:{}:{}:{}:{}",
+                "test:{level:?}:{}:{}:{}:{}:{}",
                 stable_context_key(source_context),
                 entry.result.name,
                 entry.result.expected_output,
-                entry.result.actual_output
+                entry.result.actual_output,
+                entry.result.runtime_error.as_deref().unwrap_or("")
             );
             if let Some(content) = self.cache.get(&key) {
                 entry.hint = Hint::new(level, content.clone());
@@ -165,9 +242,15 @@ impl SolutionHintService {
                 }
                 continue;
             }
+            if !call_budget.try_take() {
+                entry.hint = call_limit_hint(level, self.policy.max_model_calls);
+                continue;
+            }
+            let scoped_source =
+                crate::agent::context::limit_source(source_context, self.policy.source);
             let messages = test_hint_messages(
                 assignment,
-                source_context,
+                &scoped_source,
                 &entry.result,
                 &entry.classified,
                 level,
@@ -175,8 +258,19 @@ impl SolutionHintService {
                 &profile_summary,
             );
             model_call_started(level, current, total, interactive);
-            match run_model_task(Arc::clone(model), &messages, interactive) {
+            print!("\n{}", test_prefixes[index]);
+            let _ = io::stdout().flush();
+            streamed.tests.push(index);
+            match run_model_task_streaming(Arc::clone(model), &messages, interactive, |chunk| {
+                if colored {
+                    print!("\x1b[34m{chunk}\x1b[0m");
+                } else {
+                    print!("{chunk}");
+                }
+                let _ = io::stdout().flush();
+            }) {
                 ModelTaskOutcome::Completed(Ok(response)) => {
+                    println!();
                     record_exchange(
                         session,
                         tracker,
@@ -192,21 +286,31 @@ impl SolutionHintService {
                     model_call_finished(current, total);
                 }
                 ModelTaskOutcome::Completed(Err(error)) => {
+                    println!("模型生成失败：{error}");
                     model_call_failed(current, total, &error);
                     if level == HintLevel::Solution {
                         entry.hint = failed_hint(error);
                     }
                 }
                 ModelTaskOutcome::Cancelled => {
+                    println!("模型生成已取消。");
                     model_call_cancelled(current, total);
                     if level == HintLevel::Solution {
                         entry.hint = cancelled_hint();
                     }
-                    return;
+                    return streamed;
                 }
             }
         }
+        streamed
     }
+}
+
+fn call_limit_hint(level: HintLevel, limit: usize) -> Hint {
+    Hint::new(
+        level,
+        format!("当前思考模式最多允许 {limit} 次模型调用；本轮其余问题保留 Rust 基础诊断。"),
+    )
 }
 
 fn record_exchange(

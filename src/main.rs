@@ -1,24 +1,29 @@
 //! PADA CLI：参数解析和交互入口；诊断逻辑由库模块完成。
 use clap::{ArgGroup, Parser, Subcommand};
 use pada::agent::export::{available_export_target, choose_export_target};
-use pada::agent::interaction::{InteractiveCommand, help_text, parse_command};
+use pada::agent::interaction::{
+    InteractiveCommand, help_text, parse_command, reset_hint_for_new_tests,
+};
 use pada::agent::llm::LlmClient;
 use pada::agent::model_task::{ModelTaskOutcome, run_model_task};
 use pada::agent::progress::{
-    CliProgress, ProgressReporter, SilentProgress, StepChoice, StepController, parse_step_choice,
+    ProgressReporter, SilentProgress, StepChoice, StepController, parse_step_choice,
 };
-use pada::agent::solution::SolutionHintService;
+use pada::agent::solution::{SolutionHintService, StreamedReportEntries};
 use pada::agent::test_analysis::TestKnowledgeMapper;
-use pada::analysis::classifier::{classify_compile_diagnostics, classify_test_failure};
+use pada::analysis::classifier::{classify_compile_diagnostics, classify_test_result};
 use pada::analysis::error_parser::{RustcDiagnostic, Severity, parse_diagnostics};
 use pada::analysis::hint::{
-    generate_compile_hint, generate_test_hint_with_points, hint_level_as_number,
-    hint_level_from_number, next_hint_level,
+    generate_compile_hint, generate_test_result_hint, hint_level_as_number, hint_level_from_number,
+    next_hint_level,
 };
+use pada::config::effort::{EffortMode, EffortPolicy, EffortSignals, ModelCallBudget};
 use pada::config::wizard::WizardResult;
-use pada::history::{AgentDecision, LlmExchange, Session, SessionContext, StepBuilder, ToolCall};
-use pada::models::{Assignment, Diagnostic, HintLevel};
-use pada::report::{CompileReportEntry, DiagnosticReport, TestReportEntry};
+use pada::history::{
+    AgentDecision, LlmExchange, Session, SessionContext, SessionStep, StepBuilder, ToolCall,
+};
+use pada::models::{Assignment, Diagnostic, HintLevel, TestResult};
+use pada::report::{CompileReportEntry, DiagnosticReport, TestReportEntry, format_test_run};
 use pada::storage::{DataStore, StoredSession};
 use pada::telemetry::UsageTracker;
 use pada::tools::compiler::{CompileOutput, CompilerTool};
@@ -26,6 +31,16 @@ use pada::tools::runner::{TestCase, TestRunner};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
+
+#[derive(Default)]
+struct DiagnosticTimings {
+    input_ms: u128,
+    compile_ms: u128,
+    analysis_ms: u128,
+    verification_ms: u128,
+    report_ms: u128,
+}
 
 #[derive(Parser)]
 #[command(name = "pada", version, about = "Rust 编程作业诊断 Agent")]
@@ -61,6 +76,9 @@ enum Commands {
         profile: Option<String>,
         #[arg(long)]
         budget: Option<usize>,
+        /// Agent 思考模式：auto/low/medium/high/xhigh/max
+        #[arg(long, default_value_t = EffortMode::Medium)]
+        effort: EffortMode,
         #[arg(long)]
         report: Option<PathBuf>,
         #[arg(long)]
@@ -84,11 +102,18 @@ enum Commands {
         /// 即使在终端中也执行一次后退出
         #[arg(long)]
         no_interactive: bool,
+        /// 覆盖历史会话保存的思考模式
+        #[arg(long)]
+        effort: Option<EffortMode>,
     },
 }
 
 fn main() {
     if let Err(error) = run(Cli::parse()) {
+        if matches!(error, pada::error::PadaError::Cancelled) {
+            eprintln!("已取消诊断，子进程已停止。可使用 pada resume 重新打开历史会话。");
+            return;
+        }
         if io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
             eprintln!("\x1b[31;1m操作失败: {error}\x1b[0m");
         } else {
@@ -109,6 +134,7 @@ fn run(cli: Cli) -> pada::error::Result<()> {
             hint,
             profile,
             budget,
+            effort,
             report,
             history,
             save,
@@ -126,6 +152,7 @@ fn run(cli: Cli) -> pada::error::Result<()> {
                 hint,
                 profile,
                 budget,
+                effort,
                 report,
                 history,
                 save,
@@ -139,7 +166,8 @@ fn run(cli: Cli) -> pada::error::Result<()> {
         Commands::Resume {
             session,
             no_interactive,
-        } => run_resume(&store, session.as_deref(), no_interactive),
+            effort,
+        } => run_resume(&store, session.as_deref(), no_interactive, effort),
     }
 }
 
@@ -152,6 +180,7 @@ struct DiagnoseOptions {
     hint: u8,
     profile: Option<String>,
     budget: Option<usize>,
+    effort: EffortMode,
     report: Option<PathBuf>,
     history: Option<PathBuf>,
     save: Option<PathBuf>,
@@ -162,6 +191,15 @@ struct DiagnoseOptions {
 }
 
 fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error::Result<()> {
+    let reading_started = std::time::Instant::now();
+    if options.history.is_some() {
+        options.hint = 1;
+        options.generate_tests = false;
+        eprintln!("恢复会话从 hint 1 开始；需要模型提示时请主动输入 hint 3/4/5 或 case。");
+    }
+    if io::stdin().is_terminal() {
+        eprintln!("诊断期间输入 q / cancel / exit 并回车可停止当前任务。");
+    }
     options.problem = absolute_path(&options.problem)?;
     options.code = options.code.as_deref().map(absolute_path).transpose()?;
     options.project = options.project.as_deref().map(absolute_path).transpose()?;
@@ -169,6 +207,11 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
     options.config = options.config.as_deref().map(absolute_path).transpose()?;
     options.config = store.resolve_config_path(options.config.as_deref());
     options.memory = options.memory.as_deref().map(absolute_path).transpose()?;
+    if options.project.is_some() && (options.tests.is_some() || options.generate_tests) {
+        return Err(pada::error::PadaError::Config(
+            "Cargo 项目模式暂不支持 stdin/stdout JSON 测试；请移除 --tests/--generate-tests，或使用 --code 诊断单文件".into(),
+        ));
+    }
     if let Some(requested) = options.save.as_deref() {
         options.save = Some(if options.interactive {
             let stdin = io::stdin();
@@ -183,7 +226,7 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
     let description = std::fs::read_to_string(&options.problem).map_err(|e| {
         pada::error::PadaError::FileNotFound(format!("{}: {e}", options.problem.display()))
     })?;
-    let assignment = Assignment {
+    let mut assignment = Assignment {
         title: options
             .problem
             .file_stem()
@@ -192,6 +235,15 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         description,
     };
     let mut level = hint_level_from_number(options.hint).expect("clap 已校验提示等级");
+    let mut requested_effort = options.effort;
+    let mut effective_policy = requested_effort.initial_policy();
+    eprintln!("思考模式：{}", effective_policy.summary());
+    if options.generate_tests && !effective_policy.run_tests {
+        return Err(pada::error::PadaError::Config(
+            "--generate-tests 在 low 模式下不会执行生成的测试；请使用 --effort medium 或更高模式"
+                .into(),
+        ));
+    }
     let mut model_config = load_profile(options.config.as_deref(), options.profile.as_deref())?;
     if let Some((name, _)) = &model_config {
         eprintln!("模型配置: {name}");
@@ -199,7 +251,11 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
     let mut session = match options.history.as_deref() {
         Some(path) => {
             let value = Session::load(path)?;
-            eprintln!("已继续会话: {}", value.summary());
+            eprintln!(
+                "已加载历史会话：{}（题目：{}）",
+                value.display_title(),
+                value.problem_path_text()
+            );
             value
         }
         None => Session::new(&assignment.title),
@@ -215,6 +271,7 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         hint: options.hint,
         budget: options.budget,
         generate_tests: options.generate_tests,
+        effort: requested_effort,
     });
     session.add_step(
         StepBuilder::new(session.step_count())
@@ -223,6 +280,7 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             .build(),
     );
     let mut tracker = UsageTracker::new();
+    assignment.description = pada::agent::context::compact_rules(&assignment.description);
     if let Some(budget) = options.budget {
         tracker.set_session_budget(budget);
     }
@@ -244,10 +302,14 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         "学习画像: {}（自动记录练习证据；在导师模式输入 progress 查看用途与掌握度）",
         memory_path.display()
     );
-    let mut solution_hints =
-        SolutionHintService::new(model_config.as_ref().map(|(_, config)| config.clone()));
-    let mut test_mapper =
-        TestKnowledgeMapper::new(model_config.as_ref().map(|(_, config)| config.clone()));
+    let mut solution_hints = SolutionHintService::with_effort(
+        model_config.as_ref().map(|(_, config)| config.clone()),
+        effective_policy,
+    );
+    let mut test_mapper = TestKnowledgeMapper::with_effort(
+        model_config.as_ref().map(|(_, config)| config.clone()),
+        effective_policy,
+    );
     let mut stepper = StepController::new(options.step, io::stdin().is_terminal());
     if stepper.is_active() {
         println!(
@@ -261,6 +323,11 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         eprintln!("--step 需要交互式终端；当前按连续模式执行。 ");
     }
     stepper.begin_round(3 + usize::from(options.generate_tests));
+    // Keep a resumable checkpoint even if compilation or generation is cancelled.
+    store.save_auto_session(&session)?;
+    let input_ms = reading_started.elapsed().as_millis();
+    let mut llm_step_start = session.step_count();
+    let mut carried_model_calls = 0;
     if options.generate_tests {
         let (_, config) = model_config.as_ref().ok_or_else(|| {
             pada::error::PadaError::Config(
@@ -279,21 +346,39 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         )? {
             return Ok(());
         }
-        let generator = pada::tools::test_gen::TestGenerator::new(
-            pada::agent::llm::LlmClient::new(config.clone()),
-        );
         let profile_summary = knowledge.prompt_summary_at(pada::memory::now_timestamp());
-        let response = generator.generate_raw_with_profile(&assignment, &profile_summary)?;
+        let messages =
+            pada::tools::test_gen::build_prompt_with_profile(&assignment, &profile_summary);
+        let response = match run_model_task(
+            Arc::new(LlmClient::with_effort(config.clone(), effective_policy)),
+            &messages,
+            io::stdin().is_terminal(),
+        ) {
+            ModelTaskOutcome::Completed(result) => result?,
+            ModelTaskOutcome::Cancelled => return Err(pada::error::PadaError::Cancelled),
+        };
         tracker.record(&response, config);
         session.record_usage(pada::telemetry::UsageRecord::from_response(
             &response, config,
         ));
-        tests.extend(pada::tools::test_gen::parse_test_cases(&response.content)?);
-        eprintln!(
-            "已生成 {} 个边界测试；{}",
-            tests.len(),
-            tracker.summary().lines().nth(1).unwrap_or("")
+        session.add_step(
+            StepBuilder::new(session.step_count())
+                .llm_exchange(LlmExchange {
+                    messages,
+                    response: response.clone(),
+                    usage: Some(pada::telemetry::UsageRecord::from_response(
+                        &response, config,
+                    )),
+                })
+                .decision(AgentDecision::new(
+                    "test_case_generation",
+                    "生成边界测试并记录模型耗时与用量",
+                ))
+                .build(),
         );
+        tests.extend(pada::tools::test_gen::parse_test_cases(&response.content)?);
+        carried_model_calls = 1;
+        eprintln!("已生成 {} 个边界测试。", tests.len());
     }
 
     let mut first_round = true;
@@ -306,6 +391,11 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         }
         let source_context =
             submission_context(options.code.as_deref(), options.project.as_deref())?;
+        let discovery_policy = requested_effort.initial_policy();
+        let mut timings = DiagnosticTimings {
+            input_ms,
+            ..Default::default()
+        };
         let submission_key = stable_evidence_key(&source_context);
         let test_suite_key = stable_evidence_key(
             &serde_json::to_string(&tests)
@@ -322,15 +412,18 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         )? {
             return Ok(());
         }
-        let progress: Box<dyn ProgressReporter> = if stepper.is_active() {
-            Box::new(SilentProgress)
-        } else {
-            Box::new(CliProgress::new())
-        };
+        // Persistent stage lines do not overwrite streamed model output or timing logs.
+        let progress: Box<dyn ProgressReporter> = Box::new(SilentProgress);
+        eprintln!(
+            "{}",
+            stage_line(1, "编译检查", "输入 q / cancel / exit 可停止")
+        );
         progress.start(3, "诊断");
         progress.tick(1, "正在编译");
+        let compile_started = std::time::Instant::now();
         let (output, binary) =
             compile_submission(options.code.as_deref(), options.project.as_deref())?;
+        timings.compile_ms = compile_started.elapsed().as_millis();
         session.add_step(
             StepBuilder::new(session.step_count())
                 .tool_call(ToolCall::new(
@@ -345,7 +438,10 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
                         .or(options.project.as_ref())
                         .map(|p| p.display().to_string())
                         .unwrap_or_default(),
-                    format!("success={}", output.success),
+                    format!(
+                        "success={}, elapsed_ms={}",
+                        output.success, timings.compile_ms
+                    ),
                 ))
                 .build(),
         );
@@ -364,6 +460,12 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             "分析错误并运行测试",
             if tests.is_empty() {
                 "解析编译器证据并映射知识点；当前没有外部测试用例。".into()
+            } else if !discovery_policy.run_tests {
+                format!(
+                    "思考模式 {} 将跳过 {} 个外部测试，只分析编译器证据。",
+                    requested_effort,
+                    tests.len()
+                )
             } else if model_config.is_some() {
                 format!(
                     "解析编译器证据并运行 {} 个测试；失败用例会调用模型映射知识点并消耗 Token。",
@@ -379,6 +481,8 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             return Ok(());
         }
         progress.tick(2, "正在分析错误与测试");
+        eprintln!("{}", stage_line(2, "分析错误与测试", "正在收集确定性证据"));
+        let analysis_started = std::time::Instant::now();
         let (diags, classified) = compile_diagnostics(&output);
         let timestamp = pada::memory::now_timestamp();
         for point in classified
@@ -394,46 +498,101 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             );
         }
         let mut report = build_compile_report(&diags, &classified, level);
-        if output.success
+        let mut test_results = None;
+        if output.success && !tests.is_empty() && !discovery_policy.run_tests {
+            eprintln!(
+                "思考模式 {} 已跳过 {} 个测试；使用 effort medium 或更高模式可执行测试。",
+                requested_effort,
+                tests.len()
+            );
+        } else if output.success
             && !tests.is_empty()
             && let Some(program) = binary.as_deref()
         {
-            let failures = TestRunner::new()
-                .run_tests(program, &tests)?
-                .into_iter()
-                .filter(|r| !r.passed)
+            let results = TestRunner::with_runner(
+                pada::tools::runner::Runner::new().with_interactive(io::stdin().is_terminal()),
+            )
+            .run_tests(program, &tests)?;
+            let passed = results.iter().filter(|result| result.passed).count();
+            report.set_test_run(results.len(), passed);
+            print!(
+                "{}",
+                format_test_run(
+                    &results,
+                    io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+                )
+            );
+            test_results = Some(results);
+        }
+
+        let failed_tests = test_results
+            .as_ref()
+            .map(|results| results.iter().filter(|result| !result.passed).count())
+            .unwrap_or(0);
+        let has_runtime_error = test_results
+            .as_ref()
+            .is_some_and(|results| results.iter().any(|result| result.runtime_error.is_some()));
+        let resolved_policy = requested_effort.resolve(EffortSignals {
+            error_count: diags.len(),
+            file_count: pada::agent::context::source_file_count(&source_context),
+            failed_tests,
+            has_runtime_error,
+            source_bytes: source_context.len(),
+        });
+        if requested_effort == EffortMode::Auto || resolved_policy != effective_policy {
+            eprintln!(
+                "思考模式解析：{} → {}",
+                requested_effort,
+                resolved_policy.summary()
+            );
+        }
+        if resolved_policy != effective_policy {
+            effective_policy = resolved_policy;
+            solution_hints = SolutionHintService::with_effort(
+                model_config.as_ref().map(|(_, config)| config.clone()),
+                effective_policy,
+            );
+            test_mapper = TestKnowledgeMapper::with_effort(
+                model_config.as_ref().map(|(_, config)| config.clone()),
+                effective_policy,
+            );
+        }
+        let mut model_call_budget = ModelCallBudget::new(effective_policy);
+        for _ in 0..std::mem::take(&mut carried_model_calls) {
+            let _ = model_call_budget.try_take();
+        }
+
+        if let Some(results) = test_results.as_ref() {
+            let failures = results
+                .iter()
+                .filter(|result| !result.passed)
+                .cloned()
                 .collect::<Vec<_>>();
-            let mapped = match test_mapper.map_failures(
-                &assignment,
-                &source_context,
-                &failures,
-                &mut tracker,
-                &mut session,
-            ) {
+            let mapping = if matches!(level, HintLevel::Category | HintLevel::Location) {
+                Ok(failures.iter().map(classify_test_result).collect())
+            } else {
+                test_mapper.map_failures_with_budget(
+                    &assignment,
+                    &source_context,
+                    &failures,
+                    &mut tracker,
+                    &mut session,
+                    &mut model_call_budget,
+                )
+            };
+            let mapped = match mapping {
                 Ok(mapped) => mapped,
+                Err(pada::error::PadaError::Cancelled) => {
+                    return Err(pada::error::PadaError::Cancelled);
+                }
                 Err(error) => {
                     eprintln!("测试知识点映射失败，将保留基础分类: {error}");
-                    failures
-                        .iter()
-                        .map(|result| {
-                            classify_test_failure(
-                                &result.name,
-                                &result.actual_output,
-                                &result.expected_output,
-                            )
-                        })
-                        .collect()
+                    failures.iter().map(classify_test_result).collect()
                 }
             };
             let mut mapped_points = std::collections::HashSet::new();
             for (result, classified) in failures.into_iter().zip(mapped) {
-                let hint = generate_test_hint_with_points(
-                    &result.name,
-                    &result.actual_output,
-                    &result.expected_output,
-                    level,
-                    &classified.knowledge_points,
-                );
+                let hint = generate_test_result_hint(&result, &classified, level);
                 mapped_points.extend(classified.knowledge_points.iter().copied());
                 report.add_test(TestReportEntry {
                     result,
@@ -450,6 +609,17 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
                 );
             }
         }
+        timings.analysis_ms = analysis_started.elapsed().as_millis();
+        let verification_started = Instant::now();
+        run_secondary_verification(
+            &options,
+            &tests,
+            &output,
+            test_results.as_deref(),
+            effective_policy,
+            &mut session,
+        )?;
+        timings.verification_ms = verification_started.elapsed().as_millis();
         if let Some(program) = binary {
             let _ = std::fs::remove_file(program);
         }
@@ -480,24 +650,31 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             return Ok(());
         }
         progress.tick(3, "正在生成报告");
+        eprintln!("{}", stage_line(3, "生成诊断报告", "正在整理最终输出"));
         // 模型调用使用独立的静态状态标志，避免与动态进度条相互覆盖。
         progress.finish("基础诊断完成");
-        solution_hints.enrich(
+        print_report_heading(level);
+        let streamed = solution_hints.enrich_with_budget(
             &mut report,
             &assignment,
             &source_context,
             &knowledge,
             &mut tracker,
             &mut session,
-            options.interactive,
+            io::stdin().is_terminal(),
+            &mut model_call_budget,
         );
-        output_report(&report, options.report.as_deref(), store)?;
+        let report_started = Instant::now();
+        output_report(&report, options.report.as_deref(), store, &streamed)?;
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        timings.report_ms = report_started.elapsed().as_millis();
         session.add_step(
             StepBuilder::new(session.step_count())
                 .decision(AgentDecision::new(
                     "reporting",
                     format!(
-                        "生成 Level {} 提示，共 {} 个问题",
+                        "使用 {} 思考策略生成 Level {} 提示，共 {} 个问题",
+                        effective_policy.mode,
                         hint_level_as_number(level),
                         report.compile_entries.len() + report.test_entries.len()
                     ),
@@ -512,8 +689,9 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         );
         knowledge.save(&memory_path)?;
         let auto_path = store.save_auto_session(&session)?;
+        print_diagnostic_statistics(&timings, &session.steps[llm_step_start..]);
         if !persistence_announced {
-            eprintln!("会话将自动保存到: {}", auto_path.display());
+            eprintln!("会话已自动保存：{}", auto_path.display());
             persistence_announced = true;
         }
         if !options.interactive {
@@ -522,7 +700,7 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         println!("\n导师模式（{}）", help_text());
         let action = interaction(
             &mut level,
-            &report,
+            &mut report,
             &mut session,
             &mut tracker,
             options.save.as_deref(),
@@ -534,8 +712,14 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
             &assignment,
             &source_context,
             &mut solution_hints,
+            &test_mapper,
             model_config.as_ref().map(|(_, config)| config),
+            options.code.is_some(),
+            &mut requested_effort,
+            effective_policy,
         )?;
+        // Interactive hint/case calls print their own trailing statistics.
+        llm_step_start = session.step_count();
         if let Some(context) = &mut session.context {
             context.hint = hint_level_as_number(level);
         }
@@ -544,24 +728,32 @@ fn run_diagnose(mut options: DiagnoseOptions, store: &DataStore) -> pada::error:
         match action {
             LoopAction::Recheck => continue,
             LoopAction::UseTests { path, cases } => {
+                reset_hint_for_new_tests(&mut level);
                 tests = cases;
                 options.tests = Some(path.clone());
                 if let Some(context) = &mut session.context {
                     context.tests = Some(path);
+                    context.hint = 1;
                 }
-                println!("测试文件已应用，正在重新诊断。");
+                store.save_auto_session(&session)?;
+                println!("测试文件已应用；将从 Hint 1 输出本轮测试结果和诊断。");
                 continue;
             }
             LoopAction::Reconfigure(configured) => {
                 options.config = Some(configured.path.clone());
                 options.profile = Some(configured.profile_name.clone());
                 model_config = Some((configured.profile_name, configured.model.clone()));
-                solution_hints = SolutionHintService::new(Some(configured.model.clone()));
-                test_mapper = TestKnowledgeMapper::new(Some(configured.model));
+                solution_hints = SolutionHintService::with_effort(
+                    Some(configured.model.clone()),
+                    effective_policy,
+                );
+                test_mapper =
+                    TestKnowledgeMapper::with_effort(Some(configured.model), effective_policy);
                 if let Some(context) = &mut session.context {
                     context.config = options.config.clone();
                     context.profile = options.profile.clone();
                 }
+                store.save_auto_session(&session)?;
                 println!("模型配置已生效，正在重新诊断以更新知识点映射。");
                 continue;
             }
@@ -575,7 +767,7 @@ fn compile_submission(
     code: Option<&Path>,
     project: Option<&Path>,
 ) -> pada::error::Result<(CompileOutput, Option<PathBuf>)> {
-    let compiler = CompilerTool::new();
+    let compiler = CompilerTool::new().with_interactive(io::stdin().is_terminal());
     if let Some(source) = code {
         let stem = source.file_stem().unwrap_or_default().to_string_lossy();
         let binary = std::env::temp_dir().join(format!("pada-{}-{stem}", std::process::id()));
@@ -594,6 +786,93 @@ fn compile_diagnostics(output: &CompileOutput) -> (Vec<RustcDiagnostic>, Vec<Dia
     let diags = parse_diagnostics(&output.stderr);
     let classified = classify_compile_diagnostics(&diags);
     (diags, classified)
+}
+
+fn run_secondary_verification(
+    options: &DiagnoseOptions,
+    tests: &[TestCase],
+    baseline_compile: &CompileOutput,
+    baseline_tests: Option<&[TestResult]>,
+    policy: EffortPolicy,
+    session: &mut Session,
+) -> pada::error::Result<()> {
+    for pass in 1..=policy.verification_passes {
+        eprintln!("正在进行二次验证 {pass}/{}…", policy.verification_passes);
+        let (verified_compile, binary) =
+            compile_submission(options.code.as_deref(), options.project.as_deref())?;
+        let compile_consistent = compile_result_signature(&verified_compile)
+            == compile_result_signature(baseline_compile);
+        let mut tests_consistent = true;
+        if verified_compile.success
+            && let (Some(program), Some(expected)) = (binary.as_deref(), baseline_tests)
+        {
+            let actual = TestRunner::with_runner(
+                pada::tools::runner::Runner::new().with_interactive(io::stdin().is_terminal()),
+            )
+            .run_tests(program, tests)?;
+            tests_consistent = test_result_signature(&actual) == test_result_signature(expected);
+        }
+        if let Some(program) = binary {
+            let _ = std::fs::remove_file(program);
+        }
+        let consistent = compile_consistent && tests_consistent;
+        session.add_step(
+            StepBuilder::new(session.step_count())
+                .tool_call(ToolCall::new(
+                    "secondary_verification",
+                    format!("effort={}, pass={pass}", policy.mode),
+                    format!(
+                        "compile_consistent={compile_consistent}, tests_consistent={tests_consistent}"
+                    ),
+                ))
+                .decision(AgentDecision::new(
+                    "verification",
+                    if consistent {
+                        "重复编译与测试结果一致"
+                    } else {
+                        "重复执行结果不一致，提示用户检查非确定性行为"
+                    },
+                ))
+                .build(),
+        );
+        if !consistent {
+            eprintln!("⚠ 二次验证结果不一致；程序可能依赖时间、随机数或外部状态。");
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn compile_result_signature(output: &CompileOutput) -> Vec<String> {
+    if output.success {
+        return vec!["success".into()];
+    }
+    parse_diagnostics(&output.stderr)
+        .into_iter()
+        .map(|diagnostic| {
+            format!(
+                "{}:{}:{:?}",
+                diagnostic.code.as_deref().unwrap_or(""),
+                diagnostic.message,
+                diagnostic.location
+            )
+        })
+        .collect()
+}
+
+fn test_result_signature(results: &[TestResult]) -> Vec<(&str, bool, &str, &str, Option<&str>)> {
+    results
+        .iter()
+        .map(|result| {
+            (
+                result.name.as_str(),
+                result.passed,
+                result.actual_output.as_str(),
+                result.expected_output.as_str(),
+                result.runtime_error.as_deref(),
+            )
+        })
+        .collect()
 }
 
 fn build_compile_report(
@@ -626,7 +905,7 @@ enum LoopAction {
 #[allow(clippy::too_many_arguments)]
 fn interaction(
     level: &mut HintLevel,
-    report_template: &DiagnosticReport,
+    report_template: &mut DiagnosticReport,
     session: &mut Session,
     tracker: &mut UsageTracker,
     default_save: Option<&Path>,
@@ -638,7 +917,11 @@ fn interaction(
     assignment: &Assignment,
     source_context: &str,
     solution_hints: &mut SolutionHintService,
+    test_mapper: &TestKnowledgeMapper,
     model_config: Option<&pada::config::model::ModelConfig>,
+    supports_external_tests: bool,
+    requested_effort: &mut EffortMode,
+    current_policy: EffortPolicy,
 ) -> pada::error::Result<LoopAction> {
     loop {
         print!("pada[{}]> ", hint_level_as_number(*level));
@@ -663,7 +946,9 @@ fn interaction(
                     tracker,
                     session,
                     solution_hints,
-                );
+                    test_mapper,
+                    current_policy,
+                )?;
             }
             InteractiveCommand::Hint(Some(n)) => match hint_level_from_number(n) {
                 Some(next) => {
@@ -677,7 +962,9 @@ fn interaction(
                         tracker,
                         session,
                         solution_hints,
-                    );
+                        test_mapper,
+                        current_policy,
+                    )?;
                 }
                 None => println!("提示等级必须是 1 到 5。"),
             },
@@ -693,9 +980,31 @@ fn interaction(
                 tracker,
                 session,
                 solution_hints,
-            ),
+                test_mapper,
+                current_policy,
+            )?,
             InteractiveCommand::Recheck => return Ok(LoopAction::Recheck),
             InteractiveCommand::Usage => println!("{}", tracker.summary()),
+            InteractiveCommand::Effort(value) => match value {
+                None => println!(
+                    "当前会话模式：{}\n本轮生效策略：{}",
+                    requested_effort,
+                    current_policy.summary()
+                ),
+                Some(value) => match value.parse::<EffortMode>() {
+                    Ok(mode) => {
+                        *requested_effort = mode;
+                        if let Some(context) = &mut session.context {
+                            context.effort = mode;
+                        }
+                        store.save_auto_session(session)?;
+                        println!(
+                            "思考模式已切换为 {mode}；将在下一次诊断时生效，当前报告不会重新输出。"
+                        );
+                    }
+                    Err(error) => println!("{error}"),
+                },
+            },
             InteractiveCommand::Progress => {
                 print!("{}", knowledge.summary_at(pada::memory::now_timestamp()))
             }
@@ -744,6 +1053,10 @@ fn interaction(
                 }
             }
             InteractiveCommand::Tests(path) => {
+                if !supports_external_tests {
+                    println!("Cargo 项目模式暂不支持 stdin/stdout JSON 测试；当前未执行任何测试。");
+                    continue;
+                }
                 let Some(path) = path else {
                     println!("用法: test <file.json> 或 tests <file.json>");
                     continue;
@@ -764,6 +1077,10 @@ fn interaction(
                 }
             }
             InteractiveCommand::Case => {
+                if !supports_external_tests {
+                    println!("Cargo 项目模式暂不支持生成并执行 stdin/stdout JSON 测试用例。");
+                    continue;
+                }
                 if let Err(error) = generate_case_file(
                     problem_path,
                     assignment,
@@ -771,6 +1088,7 @@ fn interaction(
                     tracker,
                     session,
                     model_config,
+                    current_policy,
                 ) {
                     println!("生成测试用例失败: {error}");
                 }
@@ -805,7 +1123,9 @@ fn generate_case_file(
     tracker: &mut UsageTracker,
     session: &mut Session,
     model_config: Option<&pada::config::model::ModelConfig>,
+    policy: EffortPolicy,
 ) -> pada::error::Result<()> {
+    let llm_step_start = session.step_count();
     let config = model_config.ok_or_else(|| {
         pada::error::PadaError::Config("尚未配置模型；请先在导师模式输入 config 完成配置".into())
     })?;
@@ -817,14 +1137,27 @@ fn generate_case_file(
 
     let profile_summary = knowledge.prompt_summary_at(pada::memory::now_timestamp());
     let messages = pada::tools::test_gen::build_prompt_with_profile(assignment, &profile_summary);
-    let client = Arc::new(LlmClient::new(config.clone()));
+    let client = Arc::new(LlmClient::with_effort(config.clone(), policy));
     eprintln!("⏳ 正在调用模型生成测试用例…（输入 q 或 cancel 并回车可停止）");
     io::stderr().flush()?;
 
-    let response = match run_model_task(client, &messages, true) {
+    let response = match run_model_task(client, &messages, io::stdin().is_terminal()) {
         ModelTaskOutcome::Completed(Ok(response)) => response,
         ModelTaskOutcome::Completed(Err(error)) => {
             eprintln!("✗ 模型生成失败");
+            session.add_step(
+                StepBuilder::new(session.step_count())
+                    .tool_call(ToolCall::new(
+                        "test_case_generation",
+                        "stream=true",
+                        error.to_string(),
+                    ))
+                    .decision(AgentDecision::new(
+                        "test_case_generation_failed",
+                        "模型请求或响应读取失败，尚未进入 JSON 用例校验",
+                    ))
+                    .build(),
+            );
             return Err(error);
         }
         ModelTaskOutcome::Cancelled => {
@@ -859,6 +1192,7 @@ fn generate_case_file(
         path.display(),
         path.display()
     );
+    print_model_statistics(&session.steps[llm_step_start..]);
     Ok(())
 }
 
@@ -932,8 +1266,9 @@ fn output_report(
     report: &DiagnosticReport,
     path: Option<&Path>,
     store: &DataStore,
+    streamed: &StreamedReportEntries,
 ) -> pada::error::Result<()> {
-    print_report(report);
+    print_report_excluding(report, streamed);
     if let Some(name) = path {
         let saved = store.save_report(name, &report.to_markdown())?;
         eprintln!("诊断报告已导出: {}", saved.display());
@@ -951,39 +1286,268 @@ fn maybe_export(session: &Session, path: Option<&Path>, store: &DataStore, annou
     }
 }
 
-fn print_report(report: &DiagnosticReport) {
+fn print_report_excluding(report: &DiagnosticReport, streamed: &StreamedReportEntries) {
     if io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
-        print!("{}", report.to_colored_text());
+        print!(
+            "{}",
+            report.to_colored_text_excluding(&streamed.compile, &streamed.tests)
+        );
     } else {
-        print!("{}", report.to_text());
+        print!(
+            "{}",
+            report.to_text_excluding(&streamed.compile, &streamed.tests)
+        );
     }
+}
+
+fn print_report_heading(level: HintLevel) {
+    let colored = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    println!(
+        "\n━━ {} · {} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        style("诊断结果", "1;36", colored),
+        style(
+            &format!("Hint {}", hint_level_as_number(level)),
+            "1;33",
+            colored
+        )
+    );
+}
+
+fn print_diagnostic_statistics(timings: &DiagnosticTimings, steps: &[SessionStep]) {
+    let exchanges = steps
+        .iter()
+        .filter_map(|step| step.llm_exchange.as_ref())
+        .collect::<Vec<_>>();
+    let input_tokens: usize = exchanges
+        .iter()
+        .map(|exchange| exchange.response.input_tokens)
+        .sum();
+    let output_tokens: usize = exchanges
+        .iter()
+        .map(|exchange| exchange.response.output_tokens)
+        .sum();
+    let total_cost: f64 = exchanges
+        .iter()
+        .filter_map(|exchange| exchange.usage.as_ref())
+        .map(|usage| usage.cost)
+        .fold(0.0, |total, cost| total + cost);
+    let colored = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let title = style("本轮诊断统计", "1;36", colored);
+    println!("\n┌─ {title} ─────────────────────────────");
+    println!("│ {:<16} {:>10}", "读取输入", format_ms(timings.input_ms));
+    println!("│ {:<16} {:>10}", "编译检查", format_ms(timings.compile_ms));
+    println!(
+        "│ {:<16} {:>10}",
+        "分析与测试",
+        format_ms(timings.analysis_ms)
+    );
+    println!(
+        "│ {:<16} {:>10}",
+        "二次验证",
+        format_ms(timings.verification_ms)
+    );
+    println!("│ {:<16} {:>10}", "报告渲染", format_ms(timings.report_ms));
+    for (index, exchange) in exchanges.iter().enumerate() {
+        let timings = &exchange.response.timings;
+        println!("│");
+        println!(
+            "│ {} #{}  {}",
+            style("模型调用", "1;35", colored),
+            index + 1,
+            if exchange.response.model.is_empty() {
+                "未知模型"
+            } else {
+                &exchange.response.model
+            }
+        );
+        println!(
+            "│   {:<14} {:>10}",
+            "Prompt 构建",
+            format_ms(u128::from(timings.prompt_build_ms))
+        );
+        println!(
+            "│   {:<14} {:>10}",
+            "API TTFT",
+            timings
+                .api_ttft_ms
+                .map(|ms| format_ms(u128::from(ms)))
+                .unwrap_or_else(|| "未返回".into())
+        );
+        println!(
+            "│   {:<14} {:>10}",
+            "LLM 总耗时",
+            format_ms(u128::from(timings.total_ms))
+        );
+        println!(
+            "│   {:<14} {:>10}",
+            "Input Token", exchange.response.input_tokens
+        );
+        println!(
+            "│   {:<14} {:>10}",
+            "Output Token", exchange.response.output_tokens
+        );
+    }
+    println!("│");
+    println!(
+        "│ {}  输入 {} / 输出 {} / 合计 {} / 成本 {:.6}",
+        style("Token 合计", "1;33", colored),
+        input_tokens,
+        output_tokens,
+        input_tokens + output_tokens,
+        total_cost
+    );
+    println!("└──────────────────────────────────────");
+}
+
+fn print_model_statistics(steps: &[SessionStep]) {
+    let exchanges = steps
+        .iter()
+        .filter_map(|step| step.llm_exchange.as_ref())
+        .collect::<Vec<_>>();
+    if exchanges.is_empty() {
+        return;
+    }
+    let colored = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    println!(
+        "\n┌─ {} ─────────────────────────────",
+        style("本次模型调用统计", "1;36", colored)
+    );
+    let mut input = 0;
+    let mut output = 0;
+    let mut cost = 0.0;
+    for (index, exchange) in exchanges.iter().enumerate() {
+        input += exchange.response.input_tokens;
+        output += exchange.response.output_tokens;
+        cost += exchange
+            .usage
+            .as_ref()
+            .map(|usage| usage.cost)
+            .unwrap_or(0.0);
+        let timings = &exchange.response.timings;
+        println!(
+            "│ {} #{}  Prompt {} / TTFT {} / 总计 {}",
+            style("调用", "1;35", colored),
+            index + 1,
+            format_ms(u128::from(timings.prompt_build_ms)),
+            timings
+                .api_ttft_ms
+                .map(|ms| format_ms(u128::from(ms)))
+                .unwrap_or_else(|| "未返回".into()),
+            format_ms(u128::from(timings.total_ms))
+        );
+        println!(
+            "│          Input {} / Output {} Token",
+            exchange.response.input_tokens, exchange.response.output_tokens
+        );
+    }
+    println!(
+        "│ {}  输入 {input} / 输出 {output} / 合计 {} / 成本 {:.6}",
+        style("Token 合计", "1;33", colored),
+        input + output,
+        cost
+    );
+    println!("└──────────────────────────────────────");
+}
+
+fn format_ms(ms: u128) -> String {
+    if ms >= 1_000 {
+        format!("{:.2} s", ms as f64 / 1_000.0)
+    } else {
+        format!("{ms} ms")
+    }
+}
+
+fn style(text: &str, code: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_owned()
+    }
+}
+
+fn stage_line(index: usize, title: &str, detail: &str) -> String {
+    let colored = io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    format!(
+        "{} {}  {}",
+        style(&format!("▶ [{index}/3]"), "1;36", colored),
+        style(title, "1", colored),
+        style(detail, "2", colored)
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn show_report_at_level(
-    template: &DiagnosticReport,
+    template: &mut DiagnosticReport,
     level: HintLevel,
     assignment: &Assignment,
     source_context: &str,
-    knowledge: &pada::memory::KnowledgeProfile,
+    knowledge: &mut pada::memory::KnowledgeProfile,
     tracker: &mut UsageTracker,
     session: &mut Session,
     solution_hints: &mut SolutionHintService,
-) {
+    test_mapper: &TestKnowledgeMapper,
+    policy: EffortPolicy,
+) -> pada::error::Result<()> {
+    let llm_step_start = session.step_count();
+    let mut model_call_budget = ModelCallBudget::new(policy);
+    if matches!(
+        level,
+        HintLevel::Concept | HintLevel::Direction | HintLevel::Solution
+    ) && template
+        .test_entries
+        .iter()
+        .any(|entry| entry.classified.knowledge_points.is_empty())
+    {
+        let failures = template
+            .test_entries
+            .iter()
+            .map(|entry| entry.result.clone())
+            .collect::<Vec<_>>();
+        match test_mapper.map_failures_with_budget(
+            assignment,
+            source_context,
+            &failures,
+            tracker,
+            session,
+            &mut model_call_budget,
+        ) {
+            Ok(mapped) => {
+                let timestamp = pada::memory::now_timestamp();
+                let evidence_key = stable_evidence_key(&format!(
+                    "{}:{}",
+                    source_context,
+                    serde_json::to_string(&failures)
+                        .map_err(|error| pada::error::PadaError::Parse(error.to_string()))?
+                ));
+                for (entry, classified) in template.test_entries.iter_mut().zip(mapped) {
+                    for point in &classified.knowledge_points {
+                        knowledge.record_diagnostic_once(
+                            *point,
+                            false,
+                            format!("{evidence_key}:test:{point:?}:failed"),
+                            timestamp,
+                        );
+                    }
+                    entry.classified = classified;
+                }
+            }
+            Err(pada::error::PadaError::Cancelled) => {
+                return Err(pada::error::PadaError::Cancelled);
+            }
+            Err(error) => {
+                eprintln!("测试知识点映射失败，将保留基础分类: {error}");
+            }
+        }
+    }
     let mut report = template.clone();
     for entry in &mut report.compile_entries {
         entry.hint = generate_compile_hint(&entry.diag, &entry.classified, level);
     }
     for entry in &mut report.test_entries {
-        entry.hint = generate_test_hint_with_points(
-            &entry.result.name,
-            &entry.result.actual_output,
-            &entry.result.expected_output,
-            level,
-            &entry.classified.knowledge_points,
-        );
+        entry.hint = generate_test_result_hint(&entry.result, &entry.classified, level);
     }
-    solution_hints.enrich(
+    print_report_heading(level);
+    let streamed = solution_hints.enrich_with_budget(
         &mut report,
         assignment,
         source_context,
@@ -991,14 +1555,19 @@ fn show_report_at_level(
         tracker,
         session,
         true,
+        &mut model_call_budget,
     );
-    print_report(&report);
+    print_report_excluding(&report, &streamed);
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    print_model_statistics(&session.steps[llm_step_start..]);
+    Ok(())
 }
 
 fn run_resume(
     store: &DataStore,
     requested: Option<&str>,
     no_interactive: bool,
+    effort_override: Option<EffortMode>,
 ) -> pada::error::Result<()> {
     let sessions = store.recent_sessions()?;
     if sessions.is_empty() {
@@ -1008,29 +1577,52 @@ fn run_resume(
         );
         return Ok(());
     }
-    println!("最近的对话记录（最多 20 条）：");
+    let colored = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    println!(
+        "╭─ {} ─────────────────────────────────────────",
+        style("最近的诊断会话", "1;36", colored)
+    );
     for (index, stored) in sessions.iter().enumerate() {
-        let source = stored
-            .session
-            .context
-            .as_ref()
-            .and_then(|context| context.code.as_ref().or(context.project.as_ref()))
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "旧版记录".into());
+        if index > 0 {
+            println!("│");
+        }
         println!(
-            "  {:>2}. {} · {} · {} · 更新于 {}",
-            index + 1,
-            stored.session.title,
-            stored.session.id,
-            source,
+            "│  {}  {}",
+            style(&format!("{:02}", index + 1), "1;33", colored),
+            style(&stored.session.display_title(), "1", colored)
+        );
+        println!(
+            "│      {:<8} {}",
+            "题目",
+            stored.session.problem_path_text()
+        );
+        println!(
+            "│      {:<8} {}",
+            "提交",
+            stored.session.submission_path_text()
+        );
+        println!(
+            "│      {:<8} {}",
+            "描述",
+            style(&stored.session.description_preview(100), "2", colored)
+        );
+        println!(
+            "│      {:<8} {}",
+            "更新",
             pada::memory::elapsed_text(stored.session.updated_at, pada::memory::now_timestamp())
         );
+        println!(
+            "│      {:<8} {}",
+            "会话 ID",
+            style(&stored.session.id, "2", colored)
+        );
     }
+    println!("╰──────────────────────────────────────────────────");
 
     let choice = match requested {
         Some(value) => value.to_owned(),
         None if io::stdin().is_terminal() => {
-            print!("请选择要继续的序号: ");
+            print!("\n{} ", style("请选择会话序号：", "1;36", colored));
             io::stdout().flush()?;
             let mut value = String::new();
             io::stdin().read_line(&mut value)?;
@@ -1048,17 +1640,24 @@ fn run_resume(
             "该记录来自旧版本，缺少恢复所需的文件路径；仍可通过 --history 手动回放".into(),
         )
     })?;
-    eprintln!("正在继续会话: {}", selected.session.summary());
+    let effort = effort_override.unwrap_or(context.effort);
+    eprintln!(
+        "正在恢复：{}（题目：{}，从 Hint 1 开始，思考模式：{}）",
+        selected.session.display_title(),
+        selected.session.problem_path_text(),
+        effort
+    );
     run_diagnose(
         DiagnoseOptions {
             problem: context.problem,
             code: context.code,
             project: context.project,
             tests: context.tests,
-            generate_tests: context.generate_tests,
-            hint: context.hint,
+            generate_tests: false,
+            hint: 1,
             profile: context.profile,
             budget: context.budget,
+            effort,
             report: None,
             history: Some(selected.path.clone()),
             save: None,
@@ -1094,16 +1693,7 @@ fn submission_context(code: Option<&Path>, project: Option<&Path>) -> pada::erro
             .map_err(|e| pada::error::PadaError::FileNotFound(format!("{}: {e}", path.display())));
     }
     let project = project.expect("clap 已保证 code/project 至少一个");
-    let main = project.join("src/main.rs");
-    let lib = project.join("src/lib.rs");
-    for source in [main, lib] {
-        if source.exists() {
-            return std::fs::read_to_string(&source).map_err(|e| {
-                pada::error::PadaError::FileNotFound(format!("{}: {e}", source.display()))
-            });
-        }
-    }
-    Ok(format!("<Cargo 项目：{}>", project.display()))
+    pada::agent::context::project_sources(project)
 }
 
 fn stable_evidence_key(value: &str) -> String {
@@ -1113,4 +1703,80 @@ fn stable_evidence_key(value: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pada::agent::llm::{ChatMessage, ChatModel, LlmResponse};
+    use pada::config::model::ModelConfig;
+    use pada::models::KnowledgePoint;
+
+    struct MappingModel;
+
+    impl ChatModel for MappingModel {
+        fn chat(&self, _messages: &[ChatMessage]) -> pada::error::Result<LlmResponse> {
+            Ok(LlmResponse {
+                content: r#"{"mappings":[{"index":0,"knowledge_points":["Iterator"]}]}"#.into(),
+                input_tokens: 20,
+                output_tokens: 8,
+                model: "mapping-model".into(),
+                timings: Default::default(),
+            })
+        }
+    }
+
+    #[test]
+    fn upgrading_to_concept_maps_pending_test_knowledge() {
+        let result = TestResult {
+            name: "reverse".into(),
+            passed: false,
+            actual_output: "1 2 3".into(),
+            expected_output: "3 2 1".into(),
+            runtime_error: None,
+        };
+        let mut report = DiagnosticReport::new();
+        report.add_test(TestReportEntry {
+            classified: classify_test_result(&result),
+            hint: generate_test_result_hint(
+                &result,
+                &classify_test_result(&result),
+                HintLevel::Category,
+            ),
+            result,
+        });
+        let assignment = Assignment {
+            title: "逆序".into(),
+            description: "逆序输出整数".into(),
+        };
+        let mapper = TestKnowledgeMapper::with_model(
+            ModelConfig::local("mapping-model", 8_192),
+            Box::new(MappingModel),
+        );
+        let mut hints = SolutionHintService::new(None);
+        let mut knowledge = pada::memory::KnowledgeProfile::default();
+        let mut tracker = UsageTracker::new();
+        let mut session = Session::new("test");
+
+        show_report_at_level(
+            &mut report,
+            HintLevel::Concept,
+            &assignment,
+            "fn main() {}",
+            &mut knowledge,
+            &mut tracker,
+            &mut session,
+            &mut hints,
+            &mapper,
+            EffortPolicy::for_mode(EffortMode::Medium),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.test_entries[0].classified.knowledge_points,
+            vec![KnowledgePoint::Iterator]
+        );
+        assert_eq!(tracker.session().total_tokens(), 28);
+        assert_eq!(session.usage_records.len(), 1);
+    }
 }

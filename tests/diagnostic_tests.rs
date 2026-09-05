@@ -1,6 +1,6 @@
 //! rustc 错误解析器测试
 //!
-//! 完成 `src/analysis/error_parser.rs` 中 TODO 后运行：
+//! 可单独运行：
 //!
 //! ```bash
 //! cargo test --test diagnostic_tests

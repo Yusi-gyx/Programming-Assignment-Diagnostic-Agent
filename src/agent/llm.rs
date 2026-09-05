@@ -34,6 +34,7 @@
 //! }
 //! ```
 
+use crate::config::effort::{EffortMode, EffortPolicy};
 use crate::config::model::ModelConfig;
 use crate::error::{PadaError, Result};
 use crate::{
@@ -43,7 +44,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::io::BufRead;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 // ============================================================
 // 聊天消息
@@ -96,6 +99,34 @@ pub fn compile_hint_messages(
     deterministic_hint: &str,
     profile_summary: &str,
 ) -> Vec<ChatMessage> {
+    compile_hint_messages_with_policy(
+        assignment,
+        source_context,
+        diag,
+        classified,
+        level,
+        deterministic_hint,
+        profile_summary,
+        EffortPolicy::for_mode(EffortMode::Medium),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compile_hint_messages_with_policy(
+    assignment: &Assignment,
+    source_context: &str,
+    diag: &RustcDiagnostic,
+    classified: &Diagnostic,
+    level: HintLevel,
+    deterministic_hint: &str,
+    profile_summary: &str,
+    policy: EffortPolicy,
+) -> Vec<ChatMessage> {
+    let source_context = crate::agent::context::relevant_source_with_scope(
+        source_context,
+        diag.location.as_ref(),
+        policy.source,
+    );
     let points = classified
         .knowledge_points
         .iter()
@@ -153,13 +184,14 @@ pub fn test_hint_messages(
             profile_summary
         )),
         ChatMessage::user(format!(
-            "题目：{}\n题目描述：\n{}\n\n提交内容：\n```rust\n{}\n```\n\n失败用例：{}\n期望输出：{}\n实际输出：{}\n相关知识点：{}\nRust 基础提示：{}",
+            "题目：{}\n题目描述：\n{}\n\n提交内容：\n```rust\n{}\n```\n\n失败用例：{}\n期望输出：{}\n实际输出：{}\n运行错误：{}\n相关知识点：{}\nRust 基础提示：{}",
             assignment.title,
             assignment.description,
             source_context,
             result.name,
             result.expected_output.trim(),
             result.actual_output.trim(),
+            result.runtime_error.as_deref().unwrap_or("无"),
             if points.is_empty() {
                 "待分析"
             } else {
@@ -236,6 +268,8 @@ fn hint_level_instruction(level: HintLevel) -> &'static str {
 /// token 用量直接取自 API 响应的 `usage` 字段（R6 要求）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmResponse {
+    #[serde(default)]
+    pub timings: CallTimings,
     /// 生成的回复内容
     pub content: String,
     /// 输入 token 数（prompt_tokens）
@@ -244,6 +278,13 @@ pub struct LlmResponse {
     pub output_tokens: usize,
     /// 实际使用的模型名
     pub model: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CallTimings {
+    pub prompt_build_ms: u64,
+    pub api_ttft_ms: Option<u64>,
+    pub total_ms: u64,
 }
 
 // ============================================================
@@ -258,6 +299,7 @@ pub struct LlmClient {
     config: ModelConfig,
     /// HTTP agent（复用连接池）
     agent: ureq::Agent,
+    reasoning_effort: &'static str,
 }
 
 /// 可替换的聊天模型接口，便于诊断能力共享客户端并进行离线测试。
@@ -279,6 +321,17 @@ pub trait ChatModel: Send + Sync {
             Ok(response)
         }
     }
+
+    fn chat_cancellable_streaming(
+        &self,
+        messages: &[ChatMessage],
+        cancelled: &AtomicBool,
+        on_chunk: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<LlmResponse> {
+        let response = self.chat_cancellable(messages, cancelled)?;
+        on_chunk(&response.content);
+        Ok(response)
+    }
 }
 
 impl ChatModel for LlmClient {
@@ -293,16 +346,34 @@ impl ChatModel for LlmClient {
     ) -> Result<LlmResponse> {
         LlmClient::chat_cancellable(self, messages, cancelled)
     }
+
+    fn chat_cancellable_streaming(
+        &self,
+        messages: &[ChatMessage],
+        cancelled: &AtomicBool,
+        on_chunk: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<LlmResponse> {
+        self.chat_cancellable_streaming(messages, cancelled, on_chunk)
+    }
 }
 
 impl LlmClient {
     /// 创建客户端。
     pub fn new(config: ModelConfig) -> Self {
+        Self::with_effort(config, EffortPolicy::for_mode(EffortMode::Medium))
+    }
+
+    pub fn with_effort(config: ModelConfig, policy: EffortPolicy) -> Self {
         Self {
             config,
-            agent: ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(120))
-                .build(),
+            agent: HTTP_AGENT
+                .get_or_init(|| {
+                    ureq::AgentBuilder::new()
+                        .timeout(std::time::Duration::from_secs(120))
+                        .build()
+                })
+                .clone(),
+            reasoning_effort: policy.reasoning_effort,
         }
     }
 
@@ -310,6 +381,10 @@ impl LlmClient {
     ///
     /// 失败原因包括：网络错误、HTTP 非 2xx、响应格式异常。
     pub fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse> {
+        self.chat_cancellable(messages, &AtomicBool::new(false))
+    }
+
+    pub fn chat_json(&self, messages: &[ChatMessage]) -> Result<LlmResponse> {
         let body = self.build_request_body(messages);
         let endpoint = self.config.chat_endpoint();
 
@@ -356,9 +431,24 @@ impl LlmClient {
         messages: &[ChatMessage],
         cancelled: &AtomicBool,
     ) -> Result<LlmResponse> {
+        self.chat_cancellable_streaming(messages, cancelled, &mut |_| {})
+    }
+
+    pub fn chat_cancellable_streaming(
+        &self,
+        messages: &[ChatMessage],
+        cancelled: &AtomicBool,
+        on_chunk: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<LlmResponse> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PadaError::Llm("模型生成已取消".into()));
+        }
+        let started = Instant::now();
         let mut body = self.build_request_body(messages);
         body["stream"] = serde_json::json!(true);
         body["stream_options"] = serde_json::json!({"include_usage": true});
+        let prompt_build_ms = started.elapsed().as_millis() as u64;
+        let api_started = Instant::now();
         let endpoint = self.config.chat_endpoint();
         let request = if self.config.api_key.is_empty() {
             self.agent.post(&endpoint)
@@ -385,7 +475,50 @@ impl LlmClient {
                 )));
             }
         };
-        parse_stream_response(std::io::BufReader::new(response.into_reader()), cancelled)
+        let mut first = true;
+        let mut ttft = None;
+        let mut visible = StreamText::default();
+        let is_json = response
+            .header("Content-Type")
+            .is_some_and(|value| value.contains("application/json"));
+        let mut emit = |chunk: &str| {
+            if first {
+                ttft = Some(api_started.elapsed().as_millis() as u64);
+                first = false;
+            }
+            let visible = visible.push(chunk);
+            if !visible.is_empty() {
+                on_chunk(&visible);
+            }
+        };
+        let mut result = if is_json {
+            response
+                .into_json::<serde_json::Value>()
+                .map_err(|error| PadaError::Llm(format!("解析响应 JSON 失败: {error}")))
+                .and_then(|json| Self::parse_response(&json))
+                .inspect(|response| {
+                    if !cancelled.load(Ordering::Acquire) {
+                        emit(&response.content);
+                    }
+                })
+        } else {
+            parse_stream_response_with_callback(
+                std::io::BufReader::new(response.into_reader()),
+                cancelled,
+                &mut emit,
+            )
+        };
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PadaError::Llm("模型生成已取消".into()));
+        }
+        if let Ok(response) = &mut result {
+            response.timings = CallTimings {
+                prompt_build_ms,
+                api_ttft_ms: ttft,
+                total_ms: started.elapsed().as_millis() as u64,
+            };
+        }
+        result
     }
 
     /// 构造请求体（纯函数，便于离线测试）。
@@ -399,8 +532,8 @@ impl LlmClient {
     /// }
     /// ```
     ///
-    /// 当 `reasoning == true` 时为支持该扩展的云端接口加入
-    /// `"reasoning": true`；Ollama 使用自身的推理模型设置，不发送该字段。
+    /// 当 `reasoning == true` 时为支持该扩展的云端接口加入 reasoning 参数；
+    /// Ollama 使用自身的推理模型设置，不发送这些字段。
     pub fn build_request_body(&self, messages: &[ChatMessage]) -> serde_json::Value {
         let mut body = serde_json::json!({
             "model": self.config.model_name,
@@ -412,6 +545,7 @@ impl LlmClient {
         // 会按模型自身配置工作，因此不发送这个云端扩展字段。
         if self.config.reasoning && !self.config.is_ollama() {
             body["reasoning"] = serde_json::json!(true);
+            body["reasoning_effort"] = serde_json::json!(self.reasoning_effort);
         }
 
         body
@@ -453,6 +587,7 @@ impl LlmClient {
             .to_string();
 
         Ok(LlmResponse {
+            timings: CallTimings::default(),
             content,
             input_tokens,
             output_tokens,
@@ -465,6 +600,9 @@ impl LlmClient {
         &self.config
     }
 }
+
+// All services share one process-lifetime connection pool, including profile switches.
+static HTTP_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 fn format_http_status_error(endpoint: &str, status: u16, status_text: &str, body: &str) -> String {
     let detail = serde_json::from_str::<serde_json::Value>(body)
@@ -485,15 +623,21 @@ fn format_http_status_error(endpoint: &str, status: u16, status_text: &str, body
 }
 
 /// 解析 OpenAI 兼容的 SSE 流式响应，并在每个数据块之间检查取消标志。
-pub fn parse_stream_response<R: BufRead>(
+pub fn parse_stream_response<R: BufRead>(reader: R, cancelled: &AtomicBool) -> Result<LlmResponse> {
+    parse_stream_response_with_callback(reader, cancelled, |_| {})
+}
+
+pub fn parse_stream_response_with_callback<R: BufRead>(
     mut reader: R,
     cancelled: &AtomicBool,
+    mut on_chunk: impl FnMut(&str),
 ) -> Result<LlmResponse> {
     let mut content = String::new();
     let mut model = String::new();
     let mut input_tokens = 0;
     let mut output_tokens = 0;
     let mut line = String::new();
+    let mut completed = false;
 
     loop {
         if cancelled.load(Ordering::Acquire) {
@@ -507,11 +651,20 @@ pub fn parse_stream_response<R: BufRead>(
             break;
         }
         let line = line.trim();
-        if line.is_empty() || line.starts_with("event:") {
+        if line.is_empty()
+            || line.starts_with(':')
+            || line.starts_with("event:")
+            || line.starts_with("id:")
+            || line.starts_with("retry:")
+        {
             continue;
         }
         let data = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
         if data == "[DONE]" {
+            completed = true;
+            // Consume the HTTP body to EOF so ureq can return the socket to its pool.
+            std::io::copy(&mut reader, &mut std::io::sink())
+                .map_err(|error| PadaError::Llm(format!("读取响应结尾失败: {error}")))?;
             break;
         }
         let json: serde_json::Value = serde_json::from_str(data).map_err(|error| {
@@ -527,6 +680,10 @@ pub fn parse_stream_response<R: BufRead>(
         if let Some(value) = json.get("model").and_then(serde_json::Value::as_str) {
             model = value.to_owned();
         }
+        completed |= json
+            .pointer("/choices/0/finish_reason")
+            .is_some_and(|value| !value.is_null())
+            || json.pointer("/choices/0/message/content").is_some();
         if let Some(value) = json
             .pointer("/choices/0/delta/content")
             .and_then(serde_json::Value::as_str)
@@ -536,6 +693,9 @@ pub fn parse_stream_response<R: BufRead>(
             })
         {
             content.push_str(value);
+            if !value.is_empty() && !cancelled.load(Ordering::Acquire) {
+                on_chunk(value);
+            }
         }
         if let Some(usage) = json.get("usage") {
             input_tokens = usage
@@ -555,12 +715,53 @@ pub fn parse_stream_response<R: BufRead>(
     if content.is_empty() {
         return Err(PadaError::Llm("模型流式响应没有返回文本内容".into()));
     }
+    if !completed {
+        return Err(PadaError::Llm(
+            "模型流式响应提前结束，未收到完成标记；请重试".into(),
+        ));
+    }
     Ok(LlmResponse {
+        timings: CallTimings::default(),
         content,
         input_tokens,
         output_tokens,
         model,
     })
+}
+
+/// Hide reasoning tags even when a tag spans several SSE chunks.
+#[derive(Default)]
+pub struct StreamText {
+    pending: String,
+    thinking: bool,
+}
+
+impl StreamText {
+    pub fn push(&mut self, chunk: &str) -> String {
+        self.pending.push_str(chunk);
+        let mut visible = String::new();
+        loop {
+            let tag = if self.thinking { "</think>" } else { "<think>" };
+            if let Some(index) = self.pending.find(tag) {
+                if !self.thinking {
+                    visible.push_str(&self.pending[..index]);
+                }
+                self.pending.drain(..index + tag.len());
+                self.thinking = !self.thinking;
+                continue;
+            }
+            let keep = (1..tag.len())
+                .rev()
+                .find(|&len| self.pending.ends_with(&tag[..len]))
+                .unwrap_or(0);
+            let end = self.pending.len() - keep;
+            if !self.thinking {
+                visible.push_str(&self.pending[..end]);
+            }
+            self.pending.drain(..end);
+            return visible;
+        }
+    }
 }
 
 #[cfg(test)]

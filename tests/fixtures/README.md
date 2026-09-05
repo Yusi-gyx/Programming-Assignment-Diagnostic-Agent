@@ -12,6 +12,7 @@
 | `runtime/` | 运行时 panic 样例（后续补充） |
 | `logic/` | 逻辑错误样例（后续补充） |
 | `runner/` | 供 Runner / TestRunner 测试使用的可运行程序 |
+| `cargo/` | 完整 Cargo 项目，用于验证多文件项目诊断能力 |
 
 这些 fixtures 被编译期测试（`tests/`）引用，路径通过
 `CARGO_MANIFEST_DIR/tests/fixtures/rust/...` 定位。

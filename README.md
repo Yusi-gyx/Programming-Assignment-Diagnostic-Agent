@@ -90,6 +90,23 @@ pada[3]> recheck
 
 推荐的学习流程是：阅读当前提示、自己修改源文件、运行 `recheck`，再根据新证据决定是否请求更高等级提示。
 
+诊断深度默认是 `medium`，也可显式选择：
+
+```bash
+pada diagnose --problem problem.md --code main.rs --effort high
+```
+
+| 模式 | 行为摘要 |
+|---|---|
+| `auto` | 根据错误数、文件数、测试失败、运行时错误和源码规模自动选择 |
+| `low` | 最小上下文、最多 1 次模型调用、跳过测试，不做二次验证 |
+| `medium` | 常规上下文、最多 4 次模型调用、运行测试，默认模式 |
+| `high` | 更多相关源码、最多 8 次模型调用、运行测试并验证 1 次 |
+| `xhigh` | 大范围跨文件上下文、最多 16 次模型调用并验证 1 次 |
+| `max` | 最完整上下文、最多 32 次模型调用并验证 2 次 |
+
+模型 profile 启用 `reasoning` 且接口兼容时，请求会同时使用该模式对应的 `reasoning_effort`。`max` 使用 `xhigh` reasoning effort，其额外深度来自更大源码范围、更多调用和两次验证。
+
 脚本或 CI 中可执行一次后退出：
 
 ```bash
@@ -185,6 +202,7 @@ Level 3 和 Level 4 的模型提示明确要求使用与本题不同的通用示
 |---|---|
 | `next` | 进入下一级提示并重新显示报告 |
 | `hint [1-5]` | 查看当前等级，或直接切换到指定等级 |
+| `effort [auto/low/medium/high/xhigh/max]` | 查看或切换当前会话思考模式；不重复输出当前报告，在下一次诊断时生效 |
 | `recheck` | 重新读取已修改的提交并开始下一轮诊断 |
 | `show` | 再次显示当前等级的报告 |
 | `test <文件.json>` / `tests <文件.json>` | 替换测试集并重新诊断 |
@@ -409,7 +427,7 @@ NO_COLOR=1 pada diagnose --problem problem.md --code main.rs
 
 ```text
 pada [--data-dir <目录>] diagnose [选项]
-pada [--data-dir <目录>] resume [会话序号或 ID] [--no-interactive]
+pada [--data-dir <目录>] resume [会话序号或 ID] [--no-interactive] [--effort <模式>]
 ```
 
 `diagnose` 参数：
@@ -424,6 +442,7 @@ pada [--data-dir <目录>] resume [会话序号或 ID] [--no-interactive]
 | `--hint <1-5>` | 否 | 初始提示等级，默认 1 |
 | `--profile <名称>` | 否 | 覆盖配置中的活动 profile |
 | `--budget <数量>` | 否 | 当前会话 Token 预算 |
+| `--effort <模式>` | 否 | auto/low/medium/high/xhigh/max，默认 medium |
 | `--report <文件名>` | 否 | 导出 Markdown 报告 |
 | `--history <文件>` | 否 | 加载已有会话 JSON |
 | `--save <文件名>` | 否 | 手动导出会话 JSON |

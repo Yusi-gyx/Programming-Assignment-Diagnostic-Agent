@@ -95,7 +95,8 @@ pub fn build_prompt(assignment: &Assignment) -> Vec<ChatMessage> {
          ]\n\
          ```\n\
          4. 生成 5 到 8 个用例，覆盖尽可能多的边界类型\n\
-         5. 期望输出必须是程序在正确实现下应产生的输出",
+         5. 期望输出必须是程序在正确实现下应产生的输出\n\
+         6. 不要输出思考过程或 <think> 标签。只生成题目输入约束允许的用例；大规模场景用精简的代表性输入，禁止省略号代替实际输入。",
     );
 
     let user = ChatMessage::user(format!(
@@ -128,9 +129,15 @@ pub fn build_prompt_with_profile(
 ///
 /// 解析失败（格式不符 / 字段缺失）返回错误。
 pub fn parse_test_cases(content: &str) -> Result<Vec<TestCase>> {
-    let json_str = extract_json_array(content)?;
+    let cleaned = crate::agent::solution::format_model_output(content);
+    let json_str = extract_json_array(&cleaned)?;
     let cases: Vec<TestCaseJson> = serde_json::from_str(&json_str)
         .map_err(|e| PadaError::Parse(format!("解析测试用例 JSON 失败: {}", e)))?;
+    if cases.len() > 32 || cases.iter().any(|case| case.name.trim().is_empty()) {
+        return Err(PadaError::Parse(
+            "测试用例不得超过 32 条记录且名称不能为空".into(),
+        ));
+    }
     Ok(cases.into_iter().map(TestCase::from).collect())
 }
 
@@ -138,6 +145,23 @@ pub fn parse_test_cases(content: &str) -> Result<Vec<TestCase>> {
 ///
 /// 优先查找 ```json 代码块，找不到则尝试整体解析。
 fn extract_json_array(content: &str) -> Result<String> {
+    // Deserialize candidates instead of matching the first '[' to the last ']'.
+    // This handles prose, fenced JSON and brackets inside string values.
+    let mut empty = None;
+    for (index, _) in content.match_indices('[') {
+        let mut values =
+            serde_json::Deserializer::from_str(&content[index..]).into_iter::<Vec<TestCaseJson>>();
+        if let Some(Ok(cases)) = values.next() {
+            let candidate = content[index..index + values.byte_offset()].to_owned();
+            if !cases.is_empty() {
+                return Ok(candidate);
+            }
+            empty = Some(candidate);
+        }
+    }
+    if let Some(empty) = empty {
+        return Ok(empty);
+    }
     // 尝试提取 ```json ... ``` 代码块
     if let Some(start) = content.find("```json") {
         let after = &content[start + 7..];

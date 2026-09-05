@@ -10,6 +10,8 @@ use thiserror::Error;
 /// 各模块按需通过 `#[from]` 转换底层错误。
 #[derive(Debug, Error)]
 pub enum PadaError {
+    #[error("操作已取消")]
+    Cancelled,
     /// 文件 / 进程 IO 错误
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),

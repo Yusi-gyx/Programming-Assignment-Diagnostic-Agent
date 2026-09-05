@@ -1,6 +1,6 @@
 //! 错误分类与知识点映射测试
 //!
-//! 完成 `src/analysis/classifier.rs` 中 TODO 后运行：
+//! 可单独运行：
 //!
 //! ```bash
 //! cargo test --test classifier_tests
@@ -8,10 +8,10 @@
 
 use pada::analysis::classifier::{
     classify_compile_diagnostic, classify_compile_diagnostics, classify_test_failure,
-    code_to_knowledge_point,
+    classify_test_result, code_to_knowledge_point,
 };
 use pada::analysis::error_parser::{RustcDiagnostic, Severity, parse_diagnostics};
-use pada::models::{ErrorCategory, KnowledgePoint};
+use pada::models::{ErrorCategory, KnowledgePoint, TestResult};
 use pada::tools::compiler::CompilerTool;
 use std::path::PathBuf;
 
@@ -174,6 +174,19 @@ fn test_classify_test_failure() {
         result.knowledge_points.is_empty(),
         "测试失败的知识点应由 LLM 后续补充"
     );
+}
+
+#[test]
+fn test_classify_runtime_failure_from_execution_metadata() {
+    let result = classify_test_result(&TestResult {
+        name: "panic".into(),
+        passed: false,
+        actual_output: "partial".into(),
+        expected_output: "done".into(),
+        runtime_error: Some("thread 'main' panicked".into()),
+    });
+    assert_eq!(result.category, ErrorCategory::RuntimeError);
+    assert_eq!(result.knowledge_points, vec![KnowledgePoint::ErrorHandling]);
 }
 
 // ============================================================

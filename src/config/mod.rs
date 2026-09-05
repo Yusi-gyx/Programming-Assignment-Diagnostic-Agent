@@ -34,5 +34,6 @@
 //! output_price = 0.0
 //! ```
 
+pub mod effort;
 pub mod model;
 pub mod wizard;

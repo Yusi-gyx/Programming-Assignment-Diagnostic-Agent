@@ -19,6 +19,7 @@ impl ChatModel for MockModel {
                 .any(|message| message.content.contains("E0382"))
         );
         Ok(LlmResponse {
+            timings: Default::default(),
             content: "模型生成的参考方案".into(),
             input_tokens: 12,
             output_tokens: 8,
@@ -80,6 +81,7 @@ impl ChatModel for ConceptModel {
         assert!(messages[0].content.contains("Level 3"));
         assert!(messages[0].content.contains("不给本题答案"));
         Ok(LlmResponse {
+        timings: Default::default(),
             content: "<think>内部推理</think>\n```markdown\n### 知识点说明\n所有权决定值由谁释放。\n\n### 通用示例\n```rust\nlet name = String::from(\"Ada\");\nlet copy = name.clone();\n```\n### 自检问题\n哪个变量拥有数据？\n```"
                 .into(),
             input_tokens: 10,

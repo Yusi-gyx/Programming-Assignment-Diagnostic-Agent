@@ -255,10 +255,10 @@ impl UsageTracker {
     /// 返回 `true` 表示可以调用，`false` 表示已超预算应中断。
     pub fn check_budget(&self) -> bool {
         // 检查会话预算
-        if let Some(budget) = self.session_budget {
-            if self.session.total_tokens() >= budget {
-                return false;
-            }
+        if let Some(budget) = self.session_budget
+            && self.session.total_tokens() >= budget
+        {
+            return false;
         }
         // 检查周期预算（历史 + 会话）
         if let Some(budget) = self.period_budget {
@@ -317,16 +317,16 @@ impl UsageTracker {
     /// 生成人类可读的用量摘要（对应 CLI 命令 `\usage`，DESIGN.md §5）。
     pub fn summary(&self) -> String {
         let mut s = String::new();
-        s.push_str("=== Token 用量 ===\n");
+        s.push_str("┌─ Token 用量 ──────────────────────────\n");
         s.push_str(&format!(
-            "  本次会话: 输入 {} / 输出 {} / 共 {} token / 成本 {:.6}\n",
+            "│ 本次会话  输入 {} / 输出 {} / 合计 {} / 成本 {:.6}\n",
             self.session.total_input_tokens,
             self.session.total_output_tokens,
             self.session.total_tokens(),
             self.session.total_cost
         ));
         s.push_str(&format!(
-            "  历史累计: 输入 {} / 输出 {} / 共 {} token / 成本 {:.6}\n",
+            "│ 历史累计  输入 {} / 输出 {} / 合计 {} / 成本 {:.6}\n",
             self.history.total_input_tokens,
             self.history.total_output_tokens,
             self.history.total_input_tokens + self.history.total_output_tokens,
@@ -334,12 +334,13 @@ impl UsageTracker {
         ));
         if let Some(budget) = self.session_budget {
             s.push_str(&format!(
-                "  会话预算: {} / 已用 {} / 剩余 {}\n",
+                "│ 会话预算  总额 {} / 已用 {} / 剩余 {}\n",
                 budget,
                 self.session.total_tokens(),
                 budget.saturating_sub(self.session.total_tokens())
             ));
         }
+        s.push_str("└──────────────────────────────────────\n");
         s
     }
 }

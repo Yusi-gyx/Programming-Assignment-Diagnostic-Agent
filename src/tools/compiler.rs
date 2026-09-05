@@ -41,6 +41,7 @@ pub struct CompileOutput {
 ///
 /// 封装 rustc / cargo 的调用细节，使上层无需关心命令行构造。
 pub struct CompilerTool {
+    interactive: bool,
     /// rustc 可执行文件路径，默认 "rustc"
     rustc_path: PathBuf,
     /// cargo 可执行文件路径，默认 "cargo"
@@ -59,6 +60,7 @@ impl CompilerTool {
     /// 创建默认配置的编译工具
     pub fn new() -> Self {
         Self {
+            interactive: false,
             rustc_path: PathBuf::from("rustc"),
             cargo_path: PathBuf::from("cargo"),
             edition: String::from("2021"),
@@ -66,6 +68,11 @@ impl CompilerTool {
     }
 
     /// 自定义 rustc 路径（便于测试或使用特定工具链）
+    pub fn with_interactive(mut self, interactive: bool) -> Self {
+        self.interactive = interactive;
+        self
+    }
+
     pub fn with_rustc(mut self, path: impl Into<PathBuf>) -> Self {
         self.rustc_path = path.into();
         self
@@ -94,43 +101,21 @@ impl CompilerTool {
     /// 注意：学生代码的编译错误不会作为 Err 返回，
     /// 而是体现在 `CompileOutput.success == false` 与 stderr 中。
     pub fn compile_file(&self, source: &Path, output: Option<&Path>) -> Result<CompileOutput> {
-        // TODO: 实现 rustc 编译调用
-        //
-        // 建议步骤：
-        // 1. 检查 source 文件是否存在，不存在返回 PadaError::FileNotFound
-        // 2. 构造 Command：
-        //      rustc --edition <edition> <source>
-        //    若 output 为 Some，追加: -o <output>
-        // 3. 捕获 stdout / stderr（建议用 output.output()? 一次性获取）
-        // 4. 组装 CompileOutput：
-        //      success = exit_code == 0
-        //      stdout/stderr = String::from_utf8_lossy(...)
-        //      exit_code = status.code()
-        //
-        // 提示：使用 std::process::Command
-        //       命令形如：
-        //       Command::new(&self.rustc_path)
-        //           .arg("--edition").arg(&self.edition)
-        //           .arg(source)
-        //           .arg("-o").arg(output)   // 仅当 output 为 Some
-
-        //1、检查文件
         if !source.is_file() {
             return Err(PadaError::FileNotFound(source.display().to_string()));
         }
 
         use std::process::Command;
-        //2、组装命令
         let mut cmd = Command::new(&self.rustc_path);
         cmd.arg("--edition").arg(&self.edition).arg(source);
         if let Some(output) = output {
             cmd.arg("-o").arg(output);
         }
 
-        //3、运行命令并提取输出
-        let output = cmd.output()?;
+        let output = super::process::run_command(&mut cmd, &[], None, || {
+            self.interactive && super::process::terminal_cancelled()
+        })?;
 
-        //4、组装结果
         let success = output.status.success();
         let exit_code = output.status.code();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -153,15 +138,6 @@ impl CompilerTool {
     /// # 返回
     /// `cargo check` 的原始输出。退出码 0 视为通过。
     pub fn cargo_check(&self, project_dir: &Path) -> Result<CompileOutput> {
-        // TODO: 实现 cargo check 调用
-        //
-        // 建议步骤：
-        // 1. 检查 project_dir/Cargo.toml 是否存在
-        // 2. 构造 Command：cargo check
-        //      .current_dir(project_dir)
-        // 3. 捕获输出并组装 CompileOutput
-
-        //1、检查目录和文件是否存在
         if !project_dir.is_dir() {
             return Err(PadaError::FileNotFound(project_dir.display().to_string()));
         }
@@ -171,15 +147,16 @@ impl CompilerTool {
         }
 
         use std::process::Command;
-        //2、构造命令
         let mut cmd = Command::new(&self.cargo_path);
 
-        cmd.arg("check").current_dir(project_dir);
+        cmd.arg("check")
+            .args(["--color", "never"])
+            .current_dir(project_dir);
 
-        //3、运行指令并获得输出
-        let output = cmd.output()?;
+        let output = super::process::run_command(&mut cmd, &[], None, || {
+            self.interactive && super::process::terminal_cancelled()
+        })?;
 
-        //4、组装CompileOutput
         Ok(CompileOutput {
             success: output.status.success(),
             exit_code: output.status.code(),
